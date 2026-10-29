@@ -1,0 +1,19 @@
+# Gradle caches and build output
+.gradle/
+.kotlin/
+build/
+
+# IntelliJ IDEA project files and compiler output
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Java compiler output
+*.class
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
