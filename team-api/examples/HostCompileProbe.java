@@ -1,15 +1,25 @@
 import com.holub.life.api.*;
 import java.util.*;
+import java.util.concurrent.*;
 
-// Host-side API-only placeholder. It deliberately does NOT depend on plugin code.
-public class HostCompileProbe {
-    private static final CellType LOCAL_EMPTY = new CellType("core:empty") {
-        @Override public boolean isAlive(CellState state) { return false; }
-    };
-    GameEngine engine = (source, plan) -> source; // compile probe only; not a real engine
-
-    public BoardState sample() {
-        var cells = Collections.nCopies(4, new CellState(LOCAL_EMPTY, Map.of()));
-        return new BoardState(new BoardSize(2,2), 0L, 42L, cells);
+/** Compile-only Phase 1 stub. No dependency on Phase 2 classes; not a real host. */
+public class HostCompileProbe implements ControllerPort {
+    private static <T> CompletionStage<T> unimplemented() {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("Compile-only stub"));
+    }
+    public CompletionStage<BoardState> step() { return unimplemented(); }
+    public CompletionStage<BoardState> apply(BoardPatch patch) { return unimplemented(); }
+    public CompletionStage<Void> setRunning(boolean running) { return unimplemented(); }
+    public CompletionStage<Void> setTickIntervalMillis(int milliseconds) { return unimplemented(); }
+    public CompletionStage<PlaybackState> playbackState() { return unimplemented(); }
+    public CompletionStage<GameSnapshot> session() { return unimplemented(); }
+    public CompletionStage<BoardState> restore(GameSnapshot snapshot) { return unimplemented(); }
+    public CompletionStage<Void> configure(SimulationPlan plan) { return unimplemented(); }
+    public RegistryView registry() { throw new UnsupportedOperationException("Compile-only stub"); }
+    public void addErrorListener(HostErrorListener listener) {
+        throw new UnsupportedOperationException("Compile-only stub");
+    }
+    public void removeErrorListener(HostErrorListener listener) {
+        throw new UnsupportedOperationException("Compile-only stub");
     }
 }

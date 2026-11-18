@@ -1,5 +1,5 @@
 package com.holub.life.api;
-/** View subscribes here; host owns mutation and event dispatch. */
+/** View subscribes here; host publishes only fully committed immutable boards. */
 public interface ModelPort {
     BoardState snapshot();
     void addListener(ModelListener listener);

@@ -1,19 +1,22 @@
-# DP 팀 JUnit/Stub 테스트 계약 (최소)
+# 최소 테스트 계약 — API 1.0
 
-과제 원문은 기존 기능 유지, 새 기능 및 설계개선의 JUnit 검증, 테스트 목적·결과 스크린샷을 요구한다. 아래 사례는 **우리 팀의 제안된 테스트**이며 교수님이 사례 하나하나를 지정한 것은 아니다.
+별도 복잡한 승인 절차를 만들지 않고 구현과 함께 JUnit 테스트를 작성한다. 아래는 팀 API의 검증안이지 교수님이 각각 지정한 사례는 아니다. 과제 제출 시 테스트 목적·입력·기대 결과·실제 결과 스크린샷을 남긴다. Model/UI 분리 검증은 권장 사항으로 유지한다.
 
-| ID | Phase 1 실제 구현 + fake plugin | Phase 2 실제 plugin + fake host/Neighbor |
-|---|---|---|
-| C01 | 기본 Conway: blinker/공존 패턴에 대한 1~3 tick 기대결과 | `DefaultLifecycle`의 이웃 상태별 생존 결과 |
-| C02 | 입력 `BoardState` 불변 및 결과 generation 1회 증가 | singleton CellType 두 좌표의 age가 독립적으로 증가 |
-| C03 | lifecycle plugin A→B: A가 만든 **보드 전체**를 B가 읽음 | fake Neighbor가 B1을 주었을 때 B가 기대한 결과 |
-| C04 | 전체 UI 우선순위 필터링: API point별 A/C만 올바른 순서 | plugin 모듈 registration/우선순위 변경에 의존하지 않음 |
-| C05 | Toroidal 2×2의 이웃 3개, 1×1의 이웃 0개 | Toroidal accessor가 음수 좌표도 올바르게 wrap |
-| C06 | 한 좌표 중복 쓰기는 LWW; 무효 patch는 상태 변경 없이 오류 | brush/nutrient가 유효한 ordered patch 반환 |
-| C07 | Controller 입력→Model 반영→fake View listener 통보 | fake host에 input tool·view plugin 연결 |
-| C08 | snapshot 파일 저장/복원 / pattern 따로 로드 / 실패 시 보존 | 새 codec의 encode/decode 값 동일성 |
-| C09 | 원래 동작하던 편집, tick, 재생/정지, Clear, Load/Store | 실제 구현 plugin의 기능 시연 및 JUnit 결과 |
+| 범위 | 실제 구현에 요구되는 검증 |
+|---|---|
+| 기존 기능 | 기본 Conway의 탄생·생존·사망, stable pattern·blinker·glider, 편집·clear·tick·재생/정지·속도·기존 load/store |
+| 상태 | 입력 불변, singleton과 좌표별 property 독립, 전체 tick당 generation 1회 증가 |
+| Lifecycle | CellType 인자 없이 등록, 같은 stage가 동일 snapshot을 읽음, A의 **보드 전체 결과**를 B가 읽음 |
+| 순서 | plan 목록 순서와 같은 plugin의 등록 순서. 미지원 타입 처리는 각 규칙의 기대 동작을 검증하고 호스트가 보존을 강제하지 않음 |
+| Neighbor | center=atOffset(0,0), range, canonical 중복 제거·중심 제외·정렬, 음수 wrap, 2×2/1×1 torus |
+| 난수 | 동일 source/plan/seed 재계산, 동일 실행 재현, snapshot 복원 후 계속 진행, 실패 후 재시도에서 숨은 난수 이력 영향 없음 |
+| Food·Aging | 별도 BoardEffect 없이 주변 상태→자기 다음 상태. food 전이와 burst의 시간 순서 및 age를 plugin별 fixture로 검증 |
+| 편집 | patch의 LWW와 원자성, 최종 값 공통 구조 검증, 잘못된 값이면 이전 Model 유지. Lifecycle 결과는 patch가 아님 |
+| Controller | completion 정상/예외, 속도 변경·정지, 정지 완료 후 자동 tick 없음, 일관된 연산 순서. 특정 thread/queue 구현은 테스트 계약으로 강제하지 않음 |
+| 오류·MVC | 정상 commit 후 listener, 직접 요청 실패는 completion, 자동 tick 실패는 오류 listener+정지, View 오류가 commit을 되돌리지 않음 |
+| Session·등록 | configure 원자성, session 일관된 조회, restore 성공 후 정지·실패 시 기존 session 유지, ID↔등록 singleton 매핑 |
+| Codec | snapshot/pattern 분리, 등록 lookup 사용, 미등록 ID/형식 실패, 기존 `.life` 호환 |
 
-- 각 테스트에 **목적, 입력 fixture, 기대 결과, JUnit 코드, 실제 실행 결과**를 남긴다.
-- 원본의 이미 확인된 오류를 그대로 재현해야 할 의무는 만들지 않는다.
-- `compile.sh`가 성공해도 이는 단지 **빌드 가능한 API 계약** 확인이며 JUnit 실행/실제 기능 검증이 아니다.
+Phase 1은 실제 host에 fake plugin, Phase 2는 실제 plugin에 fake host/Neighbor를 연결한다. 양쪽 모두 stub인 테스트 성공을 실제 기능 구현 완료로 주장하지 않는다. 최종 결합 시 실제 구성으로 최소 통합·시연을 수행한다.
+
+`compile.sh`는 API와 host/plugin/view 예제를 **각각 API만 의존하도록 컴파일**한다. `ApiValueSmoke`는 DTO·시그니처 검사일 뿐이며 engine/RNG 배분·thread·codec·실제 plugin은 검증하지 않는다. 과제용 JUnit은 실제 구현과 함께 별도로 실행·기록한다.

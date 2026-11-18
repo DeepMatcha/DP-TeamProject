@@ -1,10 +1,9 @@
 package com.holub.life.api;
-/** Registrar is scoped to one plugin; host knows its pluginId. */
+/** Host-scoped to one plugin. Each registerLifecycle call appends one whole-board stage. */
 public interface PluginRegistrar {
     void registerCellType(CellType type);
     void registerAccessor(AccessorFactory<GridPos> accessor);
-    void registerLifecycle(CellType type, LifecycleManager manager);
-    void registerBoardEffect(BoardEffect effect);
+    void registerLifecycle(LifecycleManager manager);
     void registerInputTool(InputTool tool);
     void registerSnapshotCodec(SnapshotCodec codec);
     void registerPatternCodec(PatternCodec codec);
