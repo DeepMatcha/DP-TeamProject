@@ -6,3 +6,6 @@
  */
 
 rootProject.name = "game-of-life"
+
+include(":life-api")
+project(":life-api").projectDir = file("team-api/life-api")
