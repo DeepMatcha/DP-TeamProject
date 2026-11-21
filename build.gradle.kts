@@ -30,6 +30,13 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.jar {
+    // Preserve the original single-file java -jar entry point.
+    dependsOn(":life-api:jar")
+    from(configurations.runtimeClasspath.map { classpath ->
+        classpath.map { dependency -> if (dependency.isDirectory) dependency else zipTree(dependency) }
+    }) {
+        exclude("META-INF/MANIFEST.MF")
+    }
     manifest {
         attributes["Main-Class"] = application.mainClass.get()
     }
