@@ -66,7 +66,7 @@ class HostControllerTest {
     void acceptedEditAndEveryStepAreSerializedAndPublishBeforeCompletion() throws Exception {
         try (var controller = controller()) {
             var last = new AtomicReference<BoardState>();
-            controller.model().addListener(board -> { throw new IllegalStateException("View unavailable"); });
+            controller.model().addListener(board -> { throw new NoClassDefFoundError("View unavailable"); });
             controller.model().addListener(last::set);
             var edit = controller.apply(new BoardPatch(List.of(new CellEdit(ORIGIN, LIVE))));
             var first = controller.step();
@@ -115,7 +115,7 @@ class HostControllerTest {
                 registrar.registerLifecycle(new LifecycleManager(0) {
                     @Override
                     public CellState figureNextState(NeighborBoard neighbors, StepContext context) {
-                        throw new IllegalStateException("Rule failure");
+                        throw new NoClassDefFoundError("Rule unavailable");
                     }
                 });
             }
@@ -178,6 +178,73 @@ class HostControllerTest {
             assertEquals(DEAD, replaced.cellAt(ORIGIN));
             assertEquals(LIVE, replaced.cellAt(target));
             assertEquals(8, replaced.generation());
+        }
+    }
+
+    @Test
+    void configureChangesOnlyThePlanAndRejectsUnsupportedOptions() throws Exception {
+        var registry = new HostRegistry(List.of(boardPlugin(), FakePhase2Plugins.mark()));
+        try (var controller = new HostController(registry, initial(), plan())) {
+            var notices = new AtomicInteger();
+            controller.model().addListener(board -> notices.incrementAndGet());
+            var old = controller.model().snapshot();
+            var candidate = plan(FakePhase2Plugins.MARK_ID);
+            controller.configure(candidate).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            var invalid = new SimulationPlan(candidate.accessorId(), candidate.plugins(),
+                    Map.of(FakePhase2Plugins.MARK_ID, Map.of("unsupported", "value")));
+            assertThrows(ExecutionException.class,
+                    () -> controller.configure(invalid).toCompletableFuture().get(5, TimeUnit.SECONDS));
+            var after = controller.session().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertSame(old, after.board());
+            assertEquals(candidate, after.plan());
+            assertEquals(0, notices.get());
+        }
+    }
+
+    @Test
+    void patchUsesRegisteredTypeIdentityEvenWhenTwoTypesCompareEqual() throws Exception {
+        var before = new EqualType("test:first");
+        var after = new EqualType("test:second");
+        var types = new LifePlugin() {
+            @Override
+            public String id() {
+                return "test:types";
+            }
+
+            @Override
+            public void register(PluginRegistrar registrar) {
+                registrar.registerCellType(before);
+                registrar.registerCellType(after);
+            }
+        };
+        var registry = new HostRegistry(List.of(boardPlugin(), types));
+        var start = new BoardState(new BoardSize(1, 1), 0, 0, List.of(new CellState(before, Map.of())));
+        try (var controller = new HostController(registry, start, plan())) {
+            var patch = new BoardPatch(List.of(new CellEdit(ORIGIN, new CellState(after, Map.of()))));
+            var edited = controller.apply(patch).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertSame(after, edited.cellAt(ORIGIN).type());
+            assertSame(edited, controller.model().snapshot());
+        }
+    }
+
+    private static final class EqualType extends CellType {
+        EqualType(String id) {
+            super(id);
+        }
+
+        @Override
+        public boolean isAlive(CellState state) {
+            return true;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof EqualType;
+        }
+
+        @Override
+        public int hashCode() {
+            return 1;
         }
     }
 

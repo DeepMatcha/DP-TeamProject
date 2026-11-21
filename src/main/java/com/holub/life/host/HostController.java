@@ -18,6 +18,7 @@ import com.holub.life.api.RegistryView;
 import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.ToolInput;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -142,7 +143,7 @@ public final class HostController implements ControllerPort, AutoCloseable {
     private BoardState commitPatch(BoardPatch patch) {
         BoardState current = model.snapshot();
         BoardState next = patchedBoard(patch);
-        if (!current.equals(next)) {
+        if (next != current) {
             model.commit(next);
         }
         return next;
@@ -155,12 +156,18 @@ public final class HostController implements ControllerPort, AutoCloseable {
         }
         BoardState current = model.snapshot();
         var cells = new ArrayList<>(current.cells());
-        lastEdits.forEach((position, state) -> {
-            current.cellAt(position); // Check canonical coordinates without wrapping.
+        boolean changed = false;
+        for (var edit : lastEdits.entrySet()) {
+            GridPos position = edit.getKey();
+            CellState previous = current.cellAt(position); // Check canonical coordinates without wrapping.
+            CellState state = edit.getValue();
             engine.validateCell(state);
-            cells.set(position.y() * current.size().width() + position.x(), state);
-        });
-        return new BoardState(current.size(), current.generation(), current.seed(), cells);
+            if (previous.type() != state.type() || !previous.properties().equals(state.properties())) {
+                cells.set(position.y() * current.size().width() + position.x(), state);
+                changed = true;
+            }
+        }
+        return changed ? new BoardState(current.size(), current.generation(), current.seed(), cells) : current;
     }
 
     @Override
@@ -238,10 +245,20 @@ public final class HostController implements ControllerPort, AutoCloseable {
                 throw new IllegalArgumentException("Incompatible plugin version: " + id);
             }
         });
-        for (PluginSelection selection : snapshot.plan().plugins()) {
-            if (installed.containsKey(selection.pluginId())
-                    && !snapshot.pluginVersions().containsKey(selection.pluginId())) {
-                throw new IllegalArgumentException("Missing plugin version: " + selection.pluginId());
+        var referenced = new HashSet<String>();
+        snapshot.plan().plugins().forEach(selection -> referenced.add(selection.pluginId()));
+        var usedTypes = new HashSet<String>();
+        snapshot.board().cells().forEach(cell -> usedTypes.add(cell.type().id()));
+        for (var registration : registry.registrations()) {
+            if ((registration.point() == ApiPoint.CELL_TYPE && usedTypes.contains(registration.id()))
+                    || (registration.point() == ApiPoint.ACCESSOR
+                        && registration.id().equals(snapshot.plan().accessorId()))) {
+                referenced.add(registration.pluginId());
+            }
+        }
+        for (String id : referenced) {
+            if (installed.containsKey(id) && !snapshot.pluginVersions().containsKey(id)) {
+                throw new IllegalArgumentException("Missing plugin version: " + id);
             }
         }
     }
@@ -286,13 +303,13 @@ public final class HostController implements ControllerPort, AutoCloseable {
     private void automaticTick() {
         try {
             tick();
-        } catch (RuntimeException | AssertionError error) {
+        } catch (RuntimeException | AssertionError | LinkageError error) {
             stopTimer();
             var failure = new HostError("automatic-tick", error.toString(), error);
             for (HostErrorListener listener : errorListeners) {
                 try {
                     listener.onError(failure);
-                } catch (RuntimeException | AssertionError listenerError) {
+                } catch (RuntimeException | AssertionError | LinkageError listenerError) {
                     LOG.log(System.Logger.Level.WARNING, "Host error listener failed", listenerError);
                 }
             }

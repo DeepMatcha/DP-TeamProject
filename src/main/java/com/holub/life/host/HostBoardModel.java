@@ -36,7 +36,7 @@ final class HostBoardModel implements ModelPort {
         for (ModelListener listener : listeners) {
             try {
                 listener.onChanged(next);
-            } catch (RuntimeException | AssertionError error) {
+            } catch (RuntimeException | AssertionError | LinkageError error) {
                 LOG.log(System.Logger.Level.WARNING, "Model listener could not consume a commit", error);
             }
         }
