@@ -141,18 +141,38 @@ class HostControllerTest {
                 Map.of(mark, Map.of("version", "fixture-v1")));
         try (var controller = new HostController(registry, initial(), plan(mark))) {
             var checkpoint = controller.session().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            var next = controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS);
-            var invalid = new GameSnapshot(checkpoint.board(), checkpoint.plan(), Map.of(mark, "other-version"));
-            assertThrows(ExecutionException.class,
-                    () -> controller.restore(invalid).toCompletableFuture().get(5, TimeUnit.SECONDS));
-            assertSame(next, controller.model().snapshot());
+            var expectedNext = controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertTrue(expectedNext.cells().stream().allMatch(
+                    cell -> cell.properties().containsKey(FakePhase2Plugins.MARK_PROPERTY)));
 
-            controller.setTickIntervalMillis(1000).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            var disabledMark = new SimulationPlan(BoundedAccessor.ID,
+                    List.of(new PluginSelection("test:board", true), new PluginSelection(mark, false)), Map.of());
+            controller.configure(disabledMark).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            controller.setTickIntervalMillis(60_000).toCompletableFuture().get(5, TimeUnit.SECONDS);
             controller.setRunning(true).toCompletableFuture().get(5, TimeUnit.SECONDS);
-            controller.restore(checkpoint).toCompletableFuture().get(5, TimeUnit.SECONDS);
-            assertEquals(new PlaybackState(false, 1000),
+
+            var before = controller.session().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            var running = controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(disabledMark, before.plan());
+            assertEquals(new PlaybackState(true, 60_000), running);
+            var notifications = new CopyOnWriteArrayList<BoardState>();
+            controller.model().addListener(notifications::add);
+
+            var invalid = new GameSnapshot(checkpoint.board(), checkpoint.plan(), Map.of(mark, "other-version"));
+            var failure = assertThrows(ExecutionException.class,
+                    () -> controller.restore(invalid).toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            assertEquals(before, controller.session().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertEquals(running, controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertTrue(notifications.isEmpty());
+
+            var restored = controller.restore(checkpoint).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(checkpoint.board(), restored);
+            assertEquals(checkpoint, controller.session().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertEquals(new PlaybackState(false, 60_000),
                     controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
-            assertEquals(next, controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertEquals(List.of(checkpoint.board()), notifications);
+            assertEquals(expectedNext, controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS));
         }
     }
 
@@ -257,6 +277,32 @@ class HostControllerTest {
             controller.model().addListener(board -> afterPause.countDown());
             assertFalse(afterPause.await(100, TimeUnit.MILLISECONDS));
             assertSame(paused, controller.model().snapshot());
+        }
+    }
+
+    @Test
+    void changingIntervalWhileRunningReschedulesTicksAndRejectsNonpositiveValues() throws Exception {
+        try (var controller = controller()) {
+            var firstTick = new CountDownLatch(1);
+            controller.model().addListener(board -> firstTick.countDown());
+            controller.setTickIntervalMillis(60_000).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            controller.setRunning(true).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(new PlaybackState(true, 60_000),
+                    controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+
+            controller.setTickIntervalMillis(10).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            var rescheduled = new PlaybackState(true, 10);
+            assertEquals(rescheduled, controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertTrue(firstTick.await(5, TimeUnit.SECONDS), "Expected a tick before the old interval elapsed");
+
+            for (int invalid : List.of(0, -1)) {
+                var failure = assertThrows(ExecutionException.class,
+                        () -> controller.setTickIntervalMillis(invalid).toCompletableFuture().get(5, TimeUnit.SECONDS));
+                assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+                assertEquals(rescheduled,
+                        controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            }
+            controller.setRunning(false).toCompletableFuture().get(5, TimeUnit.SECONDS);
         }
     }
 
