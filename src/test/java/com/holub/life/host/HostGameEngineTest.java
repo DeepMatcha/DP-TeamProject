@@ -31,6 +31,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
@@ -142,25 +143,20 @@ class HostGameEngineTest {
 
     @Test
     void rngReplaysAfterASeparateTickAndAfterAPartialFailure() {
-        String failingId = "test:conditional-failure";
-        LifePlugin failing = plugin(failingId, registrar -> registrar.registerLifecycle(new LifecycleManager(0) {
-            @Override
-            public CellState figureNextState(NeighborBoard neighbors, StepContext context) {
-                if (neighbors.center().state().type() == CoreCells.ALIVE) {
-                    throw new IllegalStateException("Fixture rejects live cells");
-                }
-                return neighbors.center().state();
-            }
-        }));
-        HostGameEngine engine = engine(FakePhase2Plugins.mark(), failing);
-        SimulationPlan plan = plan(MARK_ID, failingId);
-        BoardState input = board(2, 2);
-        BoardState expected = engine.calcNext(input, plan);
-        engine.calcNext(expected, plan);
-        assertThrows(IllegalStateException.class,
-            () -> engine.calcNext(board(2, 2, new GridPos(1, 1)), plan));
+        String checkpointId = "test:post-mark-checkpoint";
+        var failure = new IllegalStateException("Injected failure after marking");
+        HostGameEngine engine = engine(FakePhase2Plugins.mark(), checkpoint(checkpointId, failure));
+        SimulationPlan plan = plan(MARK_ID, checkpointId);
+        BoardState input = board(2, 2, new GridPos(1, 1));
+        assertSame(failure, assertThrows(IllegalStateException.class, () -> engine.calcNext(input, plan)));
+
+        BoardState retried = engine.calcNext(input, plan);
+        HostGameEngine fresh = engine(FakePhase2Plugins.mark(), checkpoint(checkpointId, null));
+        BoardState expected = fresh.calcNext(input, plan);
+        assertEquals(expected, retried);
+
+        engine.calcNext(retried, plan);
         assertEquals(expected, engine.calcNext(input, plan));
-        assertEquals(expected, engine(FakePhase2Plugins.mark(), failing).calcNext(input, plan));
     }
 
     @Test
@@ -200,6 +196,23 @@ class HostGameEngineTest {
         BoardState result = engine.calcNext(input, plan());
         assertEquals(input.cells(), result.cells());
         assertEquals(input.generation() + 1, result.generation());
+    }
+
+    private static LifePlugin checkpoint(String id, IllegalStateException firstFailure) {
+        var pending = new AtomicReference<>(firstFailure);
+        return plugin(id, registrar -> registrar.registerLifecycle(new LifecycleManager(0) {
+            @Override
+            public CellState figureNextState(NeighborBoard neighbors, StepContext context) {
+                CellState marked = neighbors.center().state();
+                // A failed attempt must already have received the result of the mark stage.
+                Long.parseLong(marked.properties().get(MARK_PROPERTY));
+                IllegalStateException failure = pending.getAndSet(null);
+                if (failure != null) {
+                    throw failure;
+                }
+                return marked;
+            }
+        }));
     }
 
     private static List<String> counts(BoardState board) {

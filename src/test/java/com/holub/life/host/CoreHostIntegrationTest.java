@@ -51,6 +51,23 @@ class CoreHostIntegrationTest {
     }
 
     @Test
+    void defaultHostDoesNotWrapTheUpperEdgeBlinker() throws Exception {
+        try (var host = CoreGame.newSession(new BoardSize(64, 64), 42L)) {
+            var horizontal = new BoardPatch(List.of(
+                    new CellEdit(new GridPos(30, 0), CoreGame.ALIVE),
+                    new CellEdit(new GridPos(31, 0), CoreGame.ALIVE),
+                    new CellEdit(new GridPos(32, 0), CoreGame.ALIVE)));
+            await(host.apply(horizontal));
+
+            var first = await(host.step());
+            assertEquals(Set.of(new GridPos(31, 0), new GridPos(31, 1)), alivePositions(first));
+            var second = await(host.step());
+            assertTrue(alivePositions(second).isEmpty());
+            assertEquals(2L, second.generation());
+        }
+    }
+
+    @Test
     void unsupportedStateCannotCorruptAnExistingPatternFile() throws Exception {
         try (var host = CoreGame.newSession(new BoardSize(2, 2), 42L)) {
             Path file = files.resolve("pattern.life");
