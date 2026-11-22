@@ -43,7 +43,11 @@ class CoreHostIntegrationTest {
             LegacyPatternFiles.store(patternFile, await(host.session()).board(), host.registry());
             await(host.clear(CoreGame.EMPTY));
             assertTrue(alivePositions(host.model().snapshot()).isEmpty());
+            await(host.setTickIntervalMillis(60_000));
+            await(host.setRunning(true));
+            assertTrue(await(host.playbackState()).running());
             await(host.replacePattern(LegacyPatternFiles.load(patternFile, host.registry()), CoreGame.EMPTY));
+            assertFalse(await(host.playbackState()).running());
             assertEquals(vertical, alivePositions(host.model().snapshot()));
             assertEquals(1, host.model().snapshot().generation());
             assertEquals(horizontal, alivePositions(await(host.step())));
