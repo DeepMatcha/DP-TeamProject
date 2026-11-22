@@ -22,6 +22,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.ServiceConfigurationError;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -303,13 +304,13 @@ public final class HostController implements ControllerPort, AutoCloseable {
     private void automaticTick() {
         try {
             tick();
-        } catch (RuntimeException | AssertionError | LinkageError error) {
+        } catch (RuntimeException | AssertionError | LinkageError | ServiceConfigurationError error) {
             stopTimer();
             var failure = new HostError("automatic-tick", error.toString(), error);
             for (HostErrorListener listener : errorListeners) {
                 try {
                     listener.onError(failure);
-                } catch (RuntimeException | AssertionError | LinkageError listenerError) {
+                } catch (RuntimeException | AssertionError | LinkageError | ServiceConfigurationError listenerError) {
                     LOG.log(System.Logger.Level.WARNING, "Host error listener failed", listenerError);
                 }
             }

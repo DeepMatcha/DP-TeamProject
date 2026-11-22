@@ -21,8 +21,12 @@ import com.holub.life.api.StepContext;
 import com.holub.life.host.fixture.FakePhase2Plugins;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceConfigurationError;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,18 +69,68 @@ class HostControllerTest {
     @Test
     void acceptedEditAndEveryStepAreSerializedAndPublishBeforeCompletion() throws Exception {
         try (var controller = controller()) {
-            var last = new AtomicReference<BoardState>();
+            var publishing = new LinkedBlockingQueue<BoardState>();
+            var delivered = new CopyOnWriteArrayList<BoardState>();
+            var allowDelivery = new Semaphore(0);
             controller.model().addListener(board -> { throw new NoClassDefFoundError("View unavailable"); });
-            controller.model().addListener(last::set);
-            var edit = controller.apply(new BoardPatch(List.of(new CellEdit(ORIGIN, LIVE))));
-            var first = controller.step();
-            var second = controller.step();
-            assertEquals(LIVE, edit.toCompletableFuture().get(5, TimeUnit.SECONDS).cellAt(ORIGIN));
-            assertEquals(9, first.toCompletableFuture().get(5, TimeUnit.SECONDS).generation());
-            var current = second.toCompletableFuture().get(5, TimeUnit.SECONDS);
-            assertEquals(10, current.generation());
-            assertEquals(LIVE, current.cellAt(ORIGIN));
-            assertSame(current, last.get());
+            controller.model().addListener(board -> {
+                publishing.add(board);
+                try {
+                    if (allowDelivery.tryAcquire(10, TimeUnit.SECONDS)) {
+                        delivered.add(board);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            try {
+                var pending = List.of(
+                        controller.apply(new BoardPatch(List.of(new CellEdit(ORIGIN, LIVE))))
+                                .toCompletableFuture(),
+                        controller.step().toCompletableFuture(),
+                        controller.step().toCompletableFuture());
+                var checked = pending.stream().map(request -> request.thenApply(committed -> {
+                    assertTrue(delivered.stream().anyMatch(board -> board == committed),
+                            "Completion must follow delivery of this exact board");
+                    return committed;
+                })).toList();
+
+                for (int index = 0; index < pending.size(); index++) {
+                    BoardState notification = publishing.poll(5, TimeUnit.SECONDS);
+                    assertNotNull(notification, "Expected one notification per accepted request");
+                    assertEquals(8 + index, notification.generation());
+                    assertEquals(LIVE, notification.cellAt(ORIGIN));
+                    assertSame(notification, controller.model().snapshot());
+                    assertFalse(pending.get(index).isDone(),
+                            "Request completed while its publication was gated");
+
+                    allowDelivery.release();
+                    assertSame(notification, checked.get(index).get(5, TimeUnit.SECONDS));
+                    assertEquals(index + 1, delivered.size());
+                    assertSame(notification, delivered.get(index));
+                }
+                assertTrue(publishing.isEmpty());
+            } finally {
+                allowDelivery.release(3);
+            }
+        }
+    }
+
+    @Test
+    void serviceConfigurationErrorInModelListenerDoesNotFailCommittedEdit() throws Exception {
+        try (var controller = controller()) {
+            var delivered = new AtomicReference<BoardState>();
+            controller.model().addListener(board -> {
+                throw new ServiceConfigurationError("Fixture view provider unavailable");
+            });
+            controller.model().addListener(delivered::set);
+
+            BoardState edited = controller.apply(new BoardPatch(List.of(new CellEdit(ORIGIN, LIVE))))
+                    .toCompletableFuture().get(5, TimeUnit.SECONDS);
+            assertEquals(LIVE, edited.cellAt(ORIGIN));
+            assertSame(edited, controller.model().snapshot());
+            assertSame(edited, delivered.get());
         }
     }
 
@@ -104,7 +158,73 @@ class HostControllerTest {
 
     @Test
     void failedAutomaticTickStopsPlaybackAndReportsThroughErrorListener() throws Exception {
-        var failing = new LifePlugin() {
+        assertFailedManualAndAutomaticTick(new NoClassDefFoundError("Fixture rule unavailable"));
+    }
+
+    @Test
+    void serviceConfigurationErrorStopsAutomaticTickAndReportsItsCause() throws Exception {
+        assertFailedManualAndAutomaticTick(new ServiceConfigurationError("Fixture rule provider unavailable"));
+    }
+
+    private static void assertFailedManualAndAutomaticTick(Error ruleError) throws Exception {
+        var failing = failingPlugin(ruleError);
+        BoardState board = initial();
+        var registry = new HostRegistry(List.of(boardPlugin(), failing));
+        try (var controller = new HostController(registry, board, plan(failing.id()))) {
+            var manual = assertThrows(ExecutionException.class,
+                    () -> controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertSame(ruleError, manual.getCause());
+            assertSame(board, controller.model().snapshot());
+
+            var reported = new CountDownLatch(1);
+            var failure = new AtomicReference<HostError>();
+            controller.addErrorListener(error -> {
+                failure.set(error);
+                reported.countDown();
+            });
+            controller.setTickIntervalMillis(10).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            controller.setRunning(true).toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+            assertTrue(reported.await(5, TimeUnit.SECONDS), "Expected automatic tick failure notification");
+            assertEquals("automatic-tick", failure.get().operation());
+            assertSame(ruleError, failure.get().cause());
+            assertEquals(new PlaybackState(false, 10),
+                    controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertSame(board, controller.model().snapshot());
+        }
+    }
+
+    @Test
+    void serviceConfigurationErrorInErrorListenerDoesNotSuppressTheNextListener() throws Exception {
+        var ruleError = new NoClassDefFoundError("Fixture rule unavailable");
+        var failing = failingPlugin(ruleError);
+        var board = initial();
+        var registry = new HostRegistry(List.of(boardPlugin(), failing));
+        try (var controller = new HostController(registry, board, plan(failing.id()))) {
+            var reported = new CountDownLatch(1);
+            var failure = new AtomicReference<HostError>();
+            controller.addErrorListener(error -> {
+                throw new ServiceConfigurationError("Fixture error listener provider unavailable");
+            });
+            controller.addErrorListener(error -> {
+                failure.set(error);
+                reported.countDown();
+            });
+
+            controller.setTickIntervalMillis(10).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            controller.setRunning(true).toCompletableFuture().get(5, TimeUnit.SECONDS);
+
+            assertTrue(reported.await(5, TimeUnit.SECONDS), "Expected the following listener to be notified");
+            assertEquals("automatic-tick", failure.get().operation());
+            assertSame(ruleError, failure.get().cause());
+            assertEquals(new PlaybackState(false, 10),
+                    controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
+            assertSame(board, controller.model().snapshot());
+        }
+    }
+
+    private static LifePlugin failingPlugin(Error ruleError) {
+        return new LifePlugin() {
             @Override
             public String id() {
                 return "test:failure";
@@ -115,31 +235,11 @@ class HostControllerTest {
                 registrar.registerLifecycle(new LifecycleManager(0) {
                     @Override
                     public CellState figureNextState(NeighborBoard neighbors, StepContext context) {
-                        throw new NoClassDefFoundError("Rule unavailable");
+                        throw ruleError;
                     }
                 });
             }
         };
-        BoardState board = initial();
-        var registry = new HostRegistry(List.of(boardPlugin(), failing));
-        try (var controller = new HostController(registry, board, plan(failing.id()))) {
-            var reported = new CountDownLatch(1);
-            var failure = new AtomicReference<HostError>();
-            controller.addErrorListener(error -> {
-                failure.set(error);
-                reported.countDown();
-            });
-            assertThrows(ExecutionException.class, () -> controller.step().toCompletableFuture().get(5, TimeUnit.SECONDS));
-            assertNull(failure.get(), "Direct failure goes to the request caller");
-
-            controller.setTickIntervalMillis(10).toCompletableFuture().get(5, TimeUnit.SECONDS);
-            controller.setRunning(true).toCompletableFuture().get(5, TimeUnit.SECONDS);
-            assertTrue(reported.await(5, TimeUnit.SECONDS));
-            assertEquals("automatic-tick", failure.get().operation());
-            assertEquals(new PlaybackState(false, 10),
-                    controller.playbackState().toCompletableFuture().get(5, TimeUnit.SECONDS));
-            assertSame(board, controller.model().snapshot());
-        }
     }
 
     @Test

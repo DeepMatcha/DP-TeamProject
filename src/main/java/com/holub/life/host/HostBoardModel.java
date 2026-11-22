@@ -4,6 +4,7 @@ import com.holub.life.api.BoardState;
 import com.holub.life.api.ModelListener;
 import com.holub.life.api.ModelPort;
 import java.util.Objects;
+import java.util.ServiceConfigurationError;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 final class HostBoardModel implements ModelPort {
@@ -36,7 +37,7 @@ final class HostBoardModel implements ModelPort {
         for (ModelListener listener : listeners) {
             try {
                 listener.onChanged(next);
-            } catch (RuntimeException | AssertionError | LinkageError error) {
+            } catch (RuntimeException | AssertionError | LinkageError | ServiceConfigurationError error) {
                 LOG.log(System.Logger.Level.WARNING, "Model listener could not consume a commit", error);
             }
         }
