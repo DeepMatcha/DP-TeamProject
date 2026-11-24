@@ -16,6 +16,7 @@
 | ID | 기존 `id()`·`formatId()` 유지. 등록 정보 및 singleton ↔ ID 조회 추가. 별도 `version()` 추가 없음 |
 | MVC·재생 | View 입력 → Controller → Model commit → listener. 자동 진행·정지·속도는 호스트 |
 | Controller | 아래 2절의 완료/실패·속도·session·registry·오류 경로로 확정 |
+| 코어 타입 접근 (1.1) | `CoreCellTypes`의 ID 상수와 `PluginRegistrar.cellTypes()` 추가. 호스트는 코어 타입을 이 ID로 plugin보다 먼저 등록. 3절 참고 |
 
 ## 2. ControllerPort — 공개 선언
 
@@ -59,7 +60,20 @@ public interface ControllerPort {
 
 `BoardState`는 immutable 2D snapshot이며 `BoardSize`, generation, seed, row-major `CellState` 목록을 소유한다. 타입 객체는 별도 singleton이고, 좌표별 `CellState.properties`는 immutable `Map<String,String>`으로 유지한다. 속성의 의미와 유효성은 plugin 책임이며 호스트용 속성 검증 SPI는 추가하지 않는다. 호스트의 null·좌표·크기·등록 타입 같은 공통 구조 검사는 유지한다.
 
-코어 타입은 호스트, 확장 타입은 각 plugin이 concrete class의 `static final INSTANCE`로 소유한다. 공통 API에 기본 타입 상수를 추가하지 않는다. 메모리에서의 타입 비교는 같은 등록 객체에 대한 `==`; 파일은 안정적인 문자열 ID를 사용한다. 등록되지 않은 객체는 다른 등록 객체와 `id()`가 같아도 동일 타입으로 간주하지 않는다.
+코어 타입은 호스트, 확장 타입은 각 plugin이 concrete class의 `static final INSTANCE`로 소유한다. 공통 API에 기본 타입 **객체** 상수를 추가하지 않는다. 대신 plugin이 코어 타입에 접근할 수 있도록 ID 문자열과 조회 경로만 공유한다(1.1 추가).
+
+```java
+public final class CoreCellTypes {
+    public static final String EMPTY_ID = "core:empty";
+    public static final String ALIVE_ID = "core:alive";
+    public static CellType empty(CellTypeLookup types);   // 미등록이면 IllegalStateException
+    public static CellType alive(CellTypeLookup types);
+}
+// PluginRegistrar
+CellTypeLookup cellTypes();
+```
+
+호스트는 빈 칸과 살아 있는 칸의 singleton을 위 ID로 등록하며, **어떤 plugin의 `register()`보다 먼저** 등록한다. `PluginRegistrar.cellTypes()`는 등록된 타입의 읽기 전용 live 조회이고 호스트 수명 동안 유효하다. Lifecycle 규칙은 `figureNextState`에서 조회할 수 없으므로, plugin이 `register()`에서 받은 조회를 규칙에 넘겨 죽은 셀의 다음 상태(빈 칸) 같은 코어 상태를 만든다. 메모리에서의 타입 비교는 같은 등록 객체에 대한 `==`; 파일은 안정적인 문자열 ID를 사용한다. 등록되지 않은 객체는 다른 등록 객체와 `id()`가 같아도 동일 타입으로 간주하지 않는다.
 
 ```java
 public interface CellTypeLookup {

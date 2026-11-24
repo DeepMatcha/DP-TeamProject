@@ -8,4 +8,9 @@ public interface PluginRegistrar {
     void registerSnapshotCodec(SnapshotCodec codec);
     void registerPatternCodec(PatternCodec codec);
     void registerView(ViewPlugin view);
+    /**
+     * Read-only live view of the registered types, usable for the host's lifetime.
+     * The core types of {@link CoreCellTypes} are registered before any plugin's register().
+     */
+    CellTypeLookup cellTypes();
 }
