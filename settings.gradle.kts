@@ -6,3 +6,15 @@
  */
 
 rootProject.name = "game-of-life"
+
+// Common API and the fake host shared by plugin tests.
+include("life-api")
+project(":life-api").projectDir = file("team-api/life-api")
+include("life-testkit")
+project(":life-testkit").projectDir = file("team-api/testkit")
+
+// Every folder under plugins/ with a build file is a module, so a plugin adds only its own folder.
+file("plugins").listFiles()
+    ?.filter { it.isDirectory && it.resolve("build.gradle.kts").exists() }
+    ?.sortedBy { it.name }
+    ?.forEach { include("plugins:${it.name}") }
