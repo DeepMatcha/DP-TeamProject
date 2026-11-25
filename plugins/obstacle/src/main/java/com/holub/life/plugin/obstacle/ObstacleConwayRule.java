@@ -11,8 +11,9 @@ import java.util.Map;
 
 /**
  * Conway's rule on a board with walls. A wall stays where it is, counts as a dead neighbor,
- * and nothing is ever born on it. This is a complete evolution rule, meant to run
- * <em>instead of</em> the host's basic Conway stage: a rule that does not know walls may erase them.
+ * and nothing is ever born on it. This is a complete evolution rule that runs
+ * <em>instead of</em> the host's basic Conway stage (the plugin declares the takeover):
+ * a rule that does not know walls may erase them.
  * <ul>
  * <li>wall: unchanged;</li>
  * <li>living cell (of any type): survives with 2 or 3 living neighbors, otherwise becomes the host's empty cell;</li>

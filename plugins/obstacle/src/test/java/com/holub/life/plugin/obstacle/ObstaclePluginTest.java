@@ -1,5 +1,6 @@
 package com.holub.life.plugin.obstacle;
 
+import com.holub.life.api.ApiPoint;
 import com.holub.life.api.BoardPatch;
 import com.holub.life.api.BoardState;
 import com.holub.life.api.CellEdit;
@@ -121,9 +122,16 @@ class ObstaclePluginTest {
     }
 
     @Test
+    void takesOverTheBuiltInConwayStageButNotTheBuiltInView() {
+        assertEquals(List.of("obstacle"), host.replacingDefault(ApiPoint.LIFECYCLE));
+        assertTrue(host.replacingDefault(ApiPoint.VIEW).isEmpty());
+    }
+
+    @Test
     void disablesItselfWhenTheViewLibraryIsMissing() {
         FakeHost bare = new FakeHost().load(new ObstaclePlugin("no.such.ViewLibrary"));
 
+        assertTrue(bare.replacingDefault(ApiPoint.LIFECYCLE).isEmpty(), "a disabled plugin leaves the built-in Conway on");
         assertTrue(bare.registrations().isEmpty());
         assertTrue(bare.resolve("obstacle:wall").isEmpty());
     }

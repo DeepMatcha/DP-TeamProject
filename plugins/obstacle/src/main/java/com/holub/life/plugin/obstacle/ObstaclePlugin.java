@@ -1,11 +1,13 @@
 package com.holub.life.plugin.obstacle;
 
+import com.holub.life.api.ApiPoint;
 import com.holub.life.api.CellTypeLookup;
 import com.holub.life.api.LifePlugin;
 import com.holub.life.api.PluginRegistrar;
 
 /**
  * Walls: one cell type, a Conway rule that respects walls, and a click tool to build them.
+ * The rule takes the place of the host's basic Conway stage while this plugin is enabled.
  * Requires the 2D view library plugin; without it this plugin logs why and registers nothing.
  */
 public final class ObstaclePlugin implements LifePlugin {
@@ -31,6 +33,8 @@ public final class ObstaclePlugin implements LifePlugin {
         CellTypeLookup types = registrar.cellTypes();
         registrar.registerCellType(ObstacleType.INSTANCE);
         registrar.registerLifecycle(new ObstacleConwayRule(types));
+        // The wall-aware rule is a whole evolution rule, so the built-in Conway stage must not run as well.
+        registrar.replaceDefault(ApiPoint.LIFECYCLE);
         registrar.registerInputTool(new WallTool(types));
         ObstaclePainters.register();
     }
