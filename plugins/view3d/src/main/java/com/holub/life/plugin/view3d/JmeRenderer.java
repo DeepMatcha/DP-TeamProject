@@ -16,10 +16,12 @@ import com.jme3.math.FastMath;
 import com.jme3.math.Vector3f;
 import com.jme3.post.FilterPostProcessor;
 import com.jme3.post.filters.BloomFilter;
+import com.jme3.post.ssao.SSAOFilter;
 import com.jme3.renderer.queue.RenderQueue;
 import com.jme3.scene.Geometry;
 import com.jme3.scene.Mesh;
 import com.jme3.scene.Node;
+import com.jme3.scene.Spatial;
 import com.jme3.scene.VertexBuffer;
 import com.jme3.scene.shape.Box;
 import com.jme3.scene.shape.Torus;
@@ -29,10 +31,7 @@ import com.jme3.util.BufferUtils;
 
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -41,8 +40,9 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * jMonkeyEngine window: lit columns with shadows, bloom on glowing cells, a camera that orbits with the mouse.
- * Drag to rotate, wheel to zoom, Space to pause the slow spin.
+ * jMonkeyEngine window: columns that rise and sink smoothly between ticks, lit from two sides with
+ * shadows and ambient occlusion, bloom on glowing cells, a cell grid on the floor, and a camera that
+ * orbits with the mouse. Drag to rotate, wheel to zoom, Space to pause the slow spin.
  */
 final class JmeRenderer implements Renderer3d {
     private static final Logger ENGINE_LOG = Logger.getLogger("com.jme3");
@@ -56,6 +56,11 @@ final class JmeRenderer implements Renderer3d {
             {-1, 1, 0, 1, 1, 0, 1, 1, 1, -1, 1, 1, 0, 0, 1},
             {-1, -1, 0, 1, -1, 0, 1, -1, 1, -1, -1, 1, 0, 0, -1},
     };
+    private static final int VERTICES_PER_COLUMN = FACES.length * 4;
+    /** How quickly a column approaches its new height; about a tenth of a second to settle. */
+    private static final float GROWTH_PER_SECOND = 14f;
+    /** Columns are darker at the foot, which makes their height readable from above. */
+    private static final float FOOT_SHADE = 0.45f;
 
     private final AtomicReference<Scene> pending = new AtomicReference<>();
     private final CountDownLatch ready = new CountDownLatch(1);
@@ -104,15 +109,88 @@ final class JmeRenderer implements Renderer3d {
         });
     }
 
+    /** One group of columns that share a material, drawn as a single mesh whose buffers are reused. */
+    private static final class ColumnGroup {
+        final Geometry geometry;
+        final Mesh mesh = new Mesh();
+        FloatBuffer positions, normals, colors;
+        IntBuffer indices;
+        int capacity;
+        int columns;
+
+        ColumnGroup(String name, Material material) {
+            geometry = new Geometry(name, mesh);
+            geometry.setMaterial(material);
+            geometry.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
+            begin(1);
+        }
+
+        void begin(int needed) {
+            if (needed > capacity) {
+                capacity = Math.max(needed, capacity * 2);
+                positions = BufferUtils.createFloatBuffer(capacity * VERTICES_PER_COLUMN * 3);
+                normals = BufferUtils.createFloatBuffer(capacity * VERTICES_PER_COLUMN * 3);
+                colors = BufferUtils.createFloatBuffer(capacity * VERTICES_PER_COLUMN * 4);
+                indices = BufferUtils.createIntBuffer(capacity * FACES.length * 6);
+            }
+            positions.clear();
+            normals.clear();
+            colors.clear();
+            indices.clear();
+            columns = 0;
+        }
+
+        void add(BoardLayout.Frame frame, float height, float red, float green, float blue) {
+            float halfX = 0.45f * frame.sizeX(), halfY = 0.45f * frame.sizeY();
+            int vertex = columns * VERTICES_PER_COLUMN;
+            for (int[] face : FACES) {
+                for (int corner = 0; corner < 4; corner++) {
+                    float alongX = face[corner * 3] * halfX, alongY = face[corner * 3 + 1] * halfY;
+                    boolean top = face[corner * 3 + 2] == 1;
+                    float up = top ? height : 0;
+                    for (int axis = 0; axis < 3; axis++) {
+                        positions.put(frame.origin()[axis] + alongX * frame.alongX()[axis]
+                                + up * frame.up()[axis] + alongY * frame.alongY()[axis]);
+                        normals.put(face[12] * frame.alongX()[axis] + face[13] * frame.up()[axis]
+                                + face[14] * frame.alongY()[axis]);
+                    }
+                    float shade = top ? 1f : FOOT_SHADE;
+                    colors.put(red * shade).put(green * shade).put(blue * shade).put(1f);
+                }
+                indices.put(vertex).put(vertex + 1).put(vertex + 2).put(vertex).put(vertex + 2).put(vertex + 3);
+                vertex += 4;
+            }
+            columns++;
+        }
+
+        void end() {
+            geometry.setCullHint(columns == 0 ? Spatial.CullHint.Always : Spatial.CullHint.Inherit);
+            mesh.setBuffer(VertexBuffer.Type.Position, 3, positions.flip());
+            mesh.setBuffer(VertexBuffer.Type.Normal, 3, normals.flip());
+            mesh.setBuffer(VertexBuffer.Type.Color, 4, colors.flip());
+            mesh.setBuffer(VertexBuffer.Type.Index, 3, indices.flip());
+            mesh.updateCounts();
+            mesh.updateBound();
+            geometry.updateModelBound();
+        }
+    }
+
     private final class App extends SimpleApplication {
         private final Node board = new Node("board");
         private final Node pillars = new Node("pillars");
-        private final Map<String, Material> materials = new HashMap<>();
+        private final Map<String, ColumnGroup> groups = new HashMap<>();
         private final Map<Material, ColorRGBA> pulsing = new HashMap<>();
         private ChaseCamera camera;
         private BitmapText caption;
         private Geometry base;
+        private Geometry grid;
         private Scene shown;
+        private BoardLayout layout;
+        /** Per cell: the column it is becoming (null for bare floor), the one it last was, and its height now. */
+        private Pillar[] target = new Pillar[0];
+        private Pillar[] last = new Pillar[0];
+        private float[] height = new float[0];
+        private boolean moving;
         private boolean spinning = true;
         private float time;
 
@@ -120,24 +198,31 @@ final class JmeRenderer implements Renderer3d {
             flyCam.setEnabled(false);
             setDisplayStatView(false);
             setDisplayFps(false);
-            viewPort.setBackgroundColor(new ColorRGBA(0.02f, 0.03f, 0.06f, 1));
+            viewPort.setBackgroundColor(new ColorRGBA(0.015f, 0.02f, 0.045f, 1));
 
+            // A warm key light from above and a cool, weaker light from the other side.
             DirectionalLight sun = new DirectionalLight();
             sun.setDirection(new Vector3f(-0.45f, -1f, -0.35f).normalizeLocal());
-            sun.setColor(ColorRGBA.White.mult(1.1f));
+            sun.setColor(new ColorRGBA(1f, 0.94f, 0.84f, 1f).mult(1.05f));
             rootNode.addLight(sun);
+            DirectionalLight fill = new DirectionalLight();
+            fill.setDirection(new Vector3f(0.6f, -0.35f, 0.7f).normalizeLocal());
+            fill.setColor(new ColorRGBA(0.35f, 0.5f, 0.9f, 1f).mult(0.45f));
+            rootNode.addLight(fill);
             AmbientLight ambient = new AmbientLight();
-            ambient.setColor(ColorRGBA.White.mult(0.45f));
+            ambient.setColor(ColorRGBA.White.mult(0.38f));
             rootNode.addLight(ambient);
 
             FilterPostProcessor effects = new FilterPostProcessor(assetManager);
             effects.setNumSamples(context.getSettings().getSamples());
             DirectionalLightShadowFilter shadows = new DirectionalLightShadowFilter(assetManager, 2048, 3);
             shadows.setLight(sun);
-            shadows.setShadowIntensity(0.45f);
+            shadows.setShadowIntensity(0.5f);
             effects.addFilter(shadows);
+            effects.addFilter(new SSAOFilter(1.6f, 2.2f, 0.35f, 0.12f));
             BloomFilter bloom = new BloomFilter(BloomFilter.GlowMode.Objects);
-            bloom.setBloomIntensity(2.2f);
+            bloom.setBloomIntensity(2.4f);
+            bloom.setBlurScale(1.8f);
             effects.addFilter(bloom);
             viewPort.addProcessor(effects);
 
@@ -169,7 +254,8 @@ final class JmeRenderer implements Renderer3d {
 
         @Override public void simpleUpdate(float tpf) {
             Scene next = pending.getAndSet(null);
-            if (next != null) rebuild(next);
+            if (next != null) retarget(next);
+            if (moving) grow(tpf);
 
             time += tpf;
             if (spinning) board.rotate(0, 0.08f * tpf, 0);
@@ -178,10 +264,14 @@ final class JmeRenderer implements Renderer3d {
             caption.setLocalTranslation(12, cam.getHeight() - 10, 0);
         }
 
-        private void rebuild(Scene scene) {
-            BoardLayout layout = new BoardLayout(scene.size(), scene.torus());
+        /** A new board only sets where each column should end up; grow() moves it there over a few frames. */
+        private void retarget(Scene scene) {
+            int cells = scene.size().area();
             if (shown == null || !shown.size().equals(scene.size()) || shown.torus() != scene.torus()) {
-                rebuildBase(layout, scene);
+                layout = new BoardLayout(scene.size(), scene.torus());
+                rebuildBase(scene);
+                last = new Pillar[cells];
+                height = new float[cells];
                 float extent = layout.extent();
                 camera.setDefaultDistance(extent * (layout.torus() ? 3.4f : 2.3f));
                 camera.setMinDistance(extent * 0.3f);
@@ -190,17 +280,43 @@ final class JmeRenderer implements Renderer3d {
             }
             shown = scene;
             caption.setText(scene.caption());
+            target = new Pillar[cells];
+            for (Scene.Placed placed : scene.pillars()) {
+                int cell = placed.y() * scene.size().width() + placed.x();
+                target[cell] = placed.pillar();
+                last[cell] = placed.pillar();
+            }
+            moving = true;
+        }
 
-            Map<String, List<Scene.Placed>> groups = new LinkedHashMap<>();
-            for (Scene.Placed placed : scene.pillars())
-                groups.computeIfAbsent(groupOf(placed.pillar()), key -> new ArrayList<>()).add(placed);
-            pillars.detachAllChildren();
-            groups.forEach((key, members) -> {
-                Geometry geometry = new Geometry(key, columns(members, layout));
-                geometry.setMaterial(materialOf(key, members.get(0).pillar()));
-                geometry.setShadowMode(RenderQueue.ShadowMode.CastAndReceive);
-                pillars.attachChild(geometry);
-            });
+        private void grow(float tpf) {
+            float step = Math.min(1f, tpf * GROWTH_PER_SECOND);
+            int width = shown.size().width();
+            moving = false;
+            Map<String, Integer> counts = new HashMap<>();
+            for (int cell = 0; cell < height.length; cell++) {
+                float goal = target[cell] == null ? 0 : target[cell].height();
+                height[cell] += (goal - height[cell]) * step;
+                if (Math.abs(goal - height[cell]) < 0.01f) height[cell] = goal;
+                else moving = true;
+                if (height[cell] > 0) counts.merge(groupOf(last[cell]), 1, Integer::sum);
+            }
+            groups.values().forEach(group -> group.begin(0));
+            for (int cell = 0; cell < height.length; cell++) {
+                if (height[cell] <= 0) continue;
+                Pillar pillar = last[cell];
+                String key = groupOf(pillar);
+                ColumnGroup group = groups.get(key);
+                if (group == null) {
+                    group = new ColumnGroup(key, columnMaterial(pillar));
+                    groups.put(key, group);
+                    pillars.attachChild(group.geometry);
+                }
+                if (group.columns == 0) group.begin(counts.get(key));
+                group.add(layout.frame(cell % width, cell / width), height[cell],
+                        pillar.red(), pillar.green(), pillar.blue());
+            }
+            groups.values().forEach(ColumnGroup::end);
         }
 
         /** Columns that glow share a material per color; all others share one and differ by vertex color. */
@@ -209,18 +325,16 @@ final class JmeRenderer implements Renderer3d {
                     : pillar.glow() + ":" + pillar.red() + "," + pillar.green() + "," + pillar.blue();
         }
 
-        private Material materialOf(String key, Pillar sample) {
-            return materials.computeIfAbsent(key, created -> {
-                Material material = lit(ColorRGBA.White);
-                material.setBoolean("UseVertexColor", true);
-                material.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Off);
-                if (sample.glow() != Pillar.Glow.NONE) {
-                    ColorRGBA glow = new ColorRGBA(sample.red(), sample.green(), sample.blue(), 1);
-                    material.setColor("GlowColor", glow);
-                    if (sample.glow() == Pillar.Glow.PULSE) pulsing.put(material, glow);
-                }
-                return material;
-            });
+        private Material columnMaterial(Pillar sample) {
+            Material material = lit(ColorRGBA.White);
+            material.setBoolean("UseVertexColor", true);
+            material.getAdditionalRenderState().setFaceCullMode(RenderState.FaceCullMode.Off);
+            if (sample.glow() != Pillar.Glow.NONE) {
+                ColorRGBA glow = new ColorRGBA(sample.red(), sample.green(), sample.blue(), 1);
+                material.setColor("GlowColor", glow);
+                if (sample.glow() == Pillar.Glow.PULSE) pulsing.put(material, glow);
+            }
+            return material;
         }
 
         private Material lit(ColorRGBA color) {
@@ -231,8 +345,9 @@ final class JmeRenderer implements Renderer3d {
             return material;
         }
 
-        private void rebuildBase(BoardLayout layout, Scene scene) {
+        private void rebuildBase(Scene scene) {
             if (base != null) base.removeFromParent();
+            if (grid != null) grid.removeFromParent();
             if (layout.torus()) {
                 base = new Geometry("base", new Torus(96, 48, layout.tubeRadius() - 0.03f, layout.ringRadius()));
                 base.rotate(FastMath.HALF_PI, 0, 0);
@@ -240,44 +355,40 @@ final class JmeRenderer implements Renderer3d {
                 base = new Geometry("base", new Box(scene.size().width() / 2f, 0.1f, scene.size().height() / 2f));
                 base.setLocalTranslation(0, -0.1f, 0);
             }
-            base.setMaterial(lit(new ColorRGBA(0.13f, 0.16f, 0.24f, 1)));
+            base.setMaterial(lit(new ColorRGBA(0.10f, 0.13f, 0.21f, 1)));
             base.setShadowMode(RenderQueue.ShadowMode.Receive);
             board.attachChild(base);
+
+            grid = new Geometry("grid", cellOutlines(scene));
+            Material lines = new Material(assetManager, "Common/MatDefs/Misc/Unshaded.j3md");
+            lines.setColor("Color", new ColorRGBA(0.2f, 0.27f, 0.42f, 1));
+            grid.setMaterial(lines);
+            grid.setShadowMode(RenderQueue.ShadowMode.Off);
+            board.attachChild(grid);
         }
 
-        /** One mesh for all columns of a group: five faces each, with face normals and the column color. */
-        private Mesh columns(List<Scene.Placed> members, BoardLayout layout) {
-            int faces = members.size() * FACES.length;
-            FloatBuffer positions = BufferUtils.createFloatBuffer(faces * 4 * 3);
-            FloatBuffer normals = BufferUtils.createFloatBuffer(faces * 4 * 3);
-            FloatBuffer colors = BufferUtils.createFloatBuffer(faces * 4 * 4);
-            IntBuffer indices = BufferUtils.createIntBuffer(faces * 6);
+        /** The outline of every cell, lifted slightly off the surface so it is not hidden by it. */
+        private Mesh cellOutlines(Scene scene) {
+            int cells = scene.size().area();
+            FloatBuffer positions = BufferUtils.createFloatBuffer(cells * 4 * 3);
+            IntBuffer indices = BufferUtils.createIntBuffer(cells * 8);
+            int[][] corners = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
             int vertex = 0;
-            for (Scene.Placed placed : members) {
-                BoardLayout.Frame frame = layout.frame(placed.x(), placed.y());
-                Pillar pillar = placed.pillar();
-                float halfX = 0.45f * frame.sizeX(), halfY = 0.45f * frame.sizeY();
-                for (int[] face : FACES) {
-                    for (int corner = 0; corner < 4; corner++) {
-                        float alongX = face[corner * 3] * halfX, alongY = face[corner * 3 + 1] * halfY;
-                        float up = face[corner * 3 + 2] * pillar.height();
-                        for (int axis = 0; axis < 3; axis++) {
-                            positions.put(frame.origin()[axis] + alongX * frame.alongX()[axis]
-                                    + up * frame.up()[axis] + alongY * frame.alongY()[axis]);
-                            normals.put(face[12] * frame.alongX()[axis] + face[13] * frame.up()[axis]
-                                    + face[14] * frame.alongY()[axis]);
-                        }
-                        colors.put(pillar.red()).put(pillar.green()).put(pillar.blue()).put(1f);
-                    }
-                    indices.put(vertex).put(vertex + 1).put(vertex + 2).put(vertex).put(vertex + 2).put(vertex + 3);
+            for (int y = 0; y < scene.size().height(); y++)
+                for (int x = 0; x < scene.size().width(); x++) {
+                    BoardLayout.Frame frame = layout.frame(x, y);
+                    for (int[] corner : corners)
+                        for (int axis = 0; axis < 3; axis++)
+                            positions.put(frame.origin()[axis] + 0.04f * frame.up()[axis]
+                                    + corner[0] * 0.5f * frame.sizeX() * frame.alongX()[axis]
+                                    + corner[1] * 0.5f * frame.sizeY() * frame.alongY()[axis]);
+                    for (int edge = 0; edge < 4; edge++) indices.put(vertex + edge).put(vertex + (edge + 1) % 4);
                     vertex += 4;
                 }
-            }
             Mesh mesh = new Mesh();
+            mesh.setMode(Mesh.Mode.Lines);
             mesh.setBuffer(VertexBuffer.Type.Position, 3, positions.flip());
-            mesh.setBuffer(VertexBuffer.Type.Normal, 3, normals.flip());
-            mesh.setBuffer(VertexBuffer.Type.Color, 4, colors.flip());
-            mesh.setBuffer(VertexBuffer.Type.Index, 3, indices.flip());
+            mesh.setBuffer(VertexBuffer.Type.Index, 2, indices.flip());
             mesh.updateBound();
             return mesh;
         }
