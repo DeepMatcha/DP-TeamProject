@@ -69,6 +69,8 @@ public final class ApiValueSmoke {
         check(lookup.idOf(other).isEmpty(), "same id is not registered singleton");
         check(PluginRegistrar.class.getMethod("cellTypes").getReturnType() == CellTypeLookup.class,
             "plugins can look up registered types");
+        check(PluginRegistrar.class.getMethod("replaceDefault", ApiPoint.class) != null,
+            "plugins can take over a built-in module");
         rejects(() -> CoreCellTypes.empty(lookup), IllegalStateException.class, "missing core type is reported");
         System.out.println("PASS: " + checks + " API value/signature checks (not host/JUnit validation)");
     }
