@@ -1,5 +1,6 @@
 package com.holub.life.testkit;
 
+import com.holub.life.api.ApiPoint;
 import com.holub.life.api.BoardState;
 import com.holub.life.api.CellState;
 import com.holub.life.api.CoreCellTypes;
@@ -14,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The fake host must itself follow the contract, or plugin tests built on it prove nothing. */
@@ -64,6 +66,20 @@ class FakeHostTest {
         BoardState source = Boards.withSeed(Boards.filled(8, 8, FakeHost.EMPTY_STATE), 42);
 
         assertEquals(host.step(source), host.step(source));
+    }
+
+    @Test
+    void recordsWhichPluginTakesOverABuiltInModuleAndRejectsPointsWithoutOne() {
+        host.load(new LifePlugin() {
+            @Override public String id() { return "test:own-rule"; }
+            @Override public void register(com.holub.life.api.PluginRegistrar registrar) {
+                registrar.replaceDefault(ApiPoint.LIFECYCLE);
+                assertThrows(IllegalArgumentException.class, () -> registrar.replaceDefault(ApiPoint.CELL_TYPE));
+            }
+        });
+
+        assertEquals(List.of("test:own-rule"), host.replacingDefault(ApiPoint.LIFECYCLE));
+        assertTrue(host.replacingDefault(ApiPoint.VIEW).isEmpty());
     }
 
     private interface Rule { CellState next(NeighborBoard neighbors, StepContext context); }

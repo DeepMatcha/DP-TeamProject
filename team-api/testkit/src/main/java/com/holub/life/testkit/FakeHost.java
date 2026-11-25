@@ -33,7 +33,8 @@ import java.util.SplittableRandom;
 
 /**
  * Minimal stand-in for the Phase 1 host: registry plus whole-board stage evaluation.
- * It has no Conway stage of its own; only the lifecycles that loaded plugins register are run.
+ * It has no Conway stage or window of its own; only what loaded plugins register is run,
+ * and a replaceDefault declaration is only recorded.
  */
 public final class FakeHost implements RegistryView {
     public static final String BOUNDED_ACCESSOR = "core:bounded";
@@ -57,6 +58,7 @@ public final class FakeHost implements RegistryView {
     private final List<LifecycleManager> lifecycles = new ArrayList<>();
     private final List<PluginInfo> plugins = new ArrayList<>();
     private final List<RegistrationInfo> registrations = new ArrayList<>();
+    private final Map<ApiPoint, List<String>> replacedDefaults = new EnumMap<>(ApiPoint.class);
 
     public FakeHost() {
         types.put(EMPTY.id(), EMPTY);
@@ -81,6 +83,11 @@ public final class FakeHost implements RegistryView {
     }
 
     public List<LifecycleManager> lifecycles() { return List.copyOf(lifecycles); }
+
+    /** IDs of the plugins that declared they take over the built-in module of the point. */
+    public List<String> replacingDefault(ApiPoint point) {
+        return List.copyOf(replacedDefaults.getOrDefault(point, List.of()));
+    }
 
     /** One whole tick with the bounded (non-wrapping) accessor. */
     public BoardState step(BoardState source) { return step(source, BOUNDED_ACCESSOR); }
@@ -156,5 +163,10 @@ public final class FakeHost implements RegistryView {
         @Override public void registerPatternCodec(PatternCodec codec) { add(ApiPoint.PATTERN_CODEC, patternCodecs, codec.formatId(), codec); }
         @Override public void registerView(ViewPlugin view) { add(ApiPoint.VIEW, views, view.id(), view); }
         @Override public CellTypeLookup cellTypes() { return FakeHost.this; }
+        @Override public void replaceDefault(ApiPoint point) {
+            if (point != ApiPoint.LIFECYCLE && point != ApiPoint.VIEW)
+                throw new IllegalArgumentException("No built-in module for " + point);
+            replacedDefaults.computeIfAbsent(point, key -> new ArrayList<>()).add(pluginId);
+        }
     }
 }
