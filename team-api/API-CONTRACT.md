@@ -16,6 +16,8 @@
 | ID | 기존 `id()`·`formatId()` 유지. 등록 정보 및 singleton ↔ ID 조회 추가. 별도 `version()` 추가 없음 |
 | MVC·재생 | View 입력 → Controller → Model commit → listener. 자동 진행·정지·속도는 호스트 |
 | Controller | 아래 2절의 완료/실패·속도·session·registry·오류 경로로 확정 |
+| 기본 모듈 대체 (1.1) | `PluginRegistrar.replaceDefault(ApiPoint)` 추가. plugin이 활성인 동안 호스트는 해당 지점의 기본 모듈(기본 Conway stage, 기본 View)을 끈다. 5절 참고 |
+| 코어 타입 접근 (1.1) | `CoreCellTypes`의 ID 상수와 `PluginRegistrar.cellTypes()` 추가. 호스트는 코어 타입을 이 ID로 plugin보다 먼저 등록. 3절 참고 |
 
 ## 2. ControllerPort — 공개 선언
 
@@ -59,7 +61,20 @@ public interface ControllerPort {
 
 `BoardState`는 immutable 2D snapshot이며 `BoardSize`, generation, seed, row-major `CellState` 목록을 소유한다. 타입 객체는 별도 singleton이고, 좌표별 `CellState.properties`는 immutable `Map<String,String>`으로 유지한다. 속성의 의미와 유효성은 plugin 책임이며 호스트용 속성 검증 SPI는 추가하지 않는다. 호스트의 null·좌표·크기·등록 타입 같은 공통 구조 검사는 유지한다.
 
-코어 타입은 호스트, 확장 타입은 각 plugin이 concrete class의 `static final INSTANCE`로 소유한다. 공통 API에 기본 타입 상수를 추가하지 않는다. 메모리에서의 타입 비교는 같은 등록 객체에 대한 `==`; 파일은 안정적인 문자열 ID를 사용한다. 등록되지 않은 객체는 다른 등록 객체와 `id()`가 같아도 동일 타입으로 간주하지 않는다.
+코어 타입은 호스트, 확장 타입은 각 plugin이 concrete class의 `static final INSTANCE`로 소유한다. 공통 API에 기본 타입 **객체** 상수를 추가하지 않는다. 대신 plugin이 코어 타입에 접근할 수 있도록 ID 문자열과 조회 경로만 공유한다(1.1 추가).
+
+```java
+public final class CoreCellTypes {
+    public static final String EMPTY_ID = "core:empty";
+    public static final String ALIVE_ID = "core:alive";
+    public static CellType empty(CellTypeLookup types);   // 미등록이면 IllegalStateException
+    public static CellType alive(CellTypeLookup types);
+}
+// PluginRegistrar
+CellTypeLookup cellTypes();
+```
+
+호스트는 빈 칸과 살아 있는 칸의 singleton을 위 ID로 등록하며, **어떤 plugin의 `register()`보다 먼저** 등록한다. `PluginRegistrar.cellTypes()`는 등록된 타입의 읽기 전용 live 조회이고 호스트 수명 동안 유효하다. Lifecycle 규칙은 `figureNextState`에서 조회할 수 없으므로, plugin이 `register()`에서 받은 조회를 규칙에 넘겨 죽은 셀의 다음 상태(빈 칸) 같은 코어 상태를 만든다. 메모리에서의 타입 비교는 같은 등록 객체에 대한 `==`; 파일은 안정적인 문자열 ID를 사용한다. 등록되지 않은 객체는 다른 등록 객체와 `id()`가 같아도 동일 타입으로 간주하지 않는다.
 
 ```java
 public interface CellTypeLookup {
@@ -105,7 +120,18 @@ public record StepContext(long generation, RandomGenerator random) { }
 
 예를 들어 plugin 배치가 `[A, B, C]`이고 lifecycle 제공자가 A와 C이면 `[A의 등록 순서, C의 등록 순서]`로 실행한다. A의 전체 결과 B1을 C가 읽으며 셀별 A→C interleaving을 하지 않는다. 중간 board는 View에 publish하지 않는다. 한 tick의 모든 stage가 끝난 결과만 commit하고 generation을 한 번 증가시킨다.
 
-규칙은 타입·이웃 수·속성 중 어떤 것을 먼저 검사해도 된다. 미지원 타입을 유지할지, 지울지, 변환할지 모두 규칙 책임이다. 기본 Conway가 장애물을 지우는 조합도 API가 자동 보정하지 않는다. UI에는 조합/순서에 따른 결과 차이를 알린다. 기본 Conway를 교체하려면 기본 stage를 비활성화한다. 다수의 진화 규칙을 활성화하면 실제로 연속 변환된다.
+**기본 모듈 대체(1.1 추가):** 호스트에는 plugin 없이도 동작하는 기본 모듈이 둘 있다. 기본 Conway stage(`ApiPoint.LIFECYCLE`)와 기본 View(`ApiPoint.VIEW`)다. 이를 대신하는 plugin은 `register()`에서 선언한다.
+
+```java
+// PluginRegistrar
+void replaceDefault(ApiPoint point);   // LIFECYCLE 또는 VIEW. 그 외 지점은 IllegalArgumentException
+```
+
+선언한 plugin이 plan에서 **활성인 동안** 호스트는 그 지점의 기본 모듈을 실행하지 않는다. plugin을 비활성화하면 기본 모듈이 다시 동작한다. 같은 지점을 여러 plugin이 선언해도 기본 모듈이 꺼지는 결과는 같고, 그 plugin들끼리의 조합은 5절의 순서 규칙을 따른다. `LIFECYCLE`을 대체하는 plugin은 완전한 진화 규칙을 등록해야 하고, `VIEW`를 대체하는 plugin은 진행·재생·속도·저장 같은 조작까지 자기 View에서 제공해야 한다. 선언만 하고 해당 지점에 아무것도 등록하지 않는 것은 plugin의 오류다.
+
+선언을 코드에 둔 이유: 로더의 manifest 형식은 이 계약이 정하지 않으므로 메타데이터에 두면 Phase마다 해석이 갈린다. 다른 등록과 같은 자리(`register()`)에 두면 컴파일로 확인되고 fake host로도 검증할 수 있다.
+
+규칙은 타입·이웃 수·속성 중 어떤 것을 먼저 검사해도 된다. 미지원 타입을 유지할지, 지울지, 변환할지 모두 규칙 책임이다. 기본 Conway가 장애물을 지우는 조합도 API가 자동 보정하지 않는다. UI에는 조합/순서에 따른 결과 차이를 알린다. 기본 Conway를 교체하려면 기본 stage를 비활성화한다(plugin이 `replaceDefault(ApiPoint.LIFECYCLE)`로 선언하면 호스트가 끈다). 다수의 진화 규칙을 활성화하면 실제로 연속 변환된다.
 
 **난수 계약:** 동일한 보드(전체 상태·generation·seed), plugin 구현/설정, plugin/stage 순서, Accessor 및 편집 입력이면 동일 결과를 보장한다. `calcNext(source, plan)`을 다시 호출한 결과가 숨은 RNG 사용 이력에 따라 달라져서는 안 된다. Plugin은 호스트가 제공한 `context.random()`만 사용하며 이를 저장·재설정하거나 벽시계/global RNG를 사용하지 않는다.
 
