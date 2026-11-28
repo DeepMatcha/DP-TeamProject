@@ -7,13 +7,18 @@ import com.holub.life.api.BoardPatch;
 import com.holub.life.api.BoardState;
 import com.holub.life.api.CellState;
 import com.holub.life.api.CellType;
+import com.holub.life.api.CellTypeLookup;
+import com.holub.life.api.ControllerPort;
+import com.holub.life.api.CoreCellTypes;
 import com.holub.life.api.GridPos;
 import com.holub.life.api.InputTool;
 import com.holub.life.api.LifePlugin;
+import com.holub.life.api.ModelPort;
 import com.holub.life.api.PluginInfo;
 import com.holub.life.api.PluginRegistrar;
 import com.holub.life.api.RegistrationInfo;
 import com.holub.life.api.ToolInput;
+import com.holub.life.api.ViewPlugin;
 
 import org.junit.jupiter.api.Test;
 
@@ -75,10 +80,7 @@ class HostRegistryTest {
 
     @Test
     void mapsCellIdsOnlyForTheExactRegisteredSingleton() {
-        var registry = new HostRegistry(List.of(plugin("core", registrar -> {
-            registrar.registerCellType(CoreCells.ALIVE);
-            registrar.registerCellType(CoreCells.EMPTY);
-        })));
+        var registry = new HostRegistry(List.of());
         var impostor = new CellType("core:alive") {
             @Override
             public boolean isAlive(CellState state) {
@@ -91,6 +93,52 @@ class HostRegistryTest {
         assertEquals(Optional.of("core:alive"), registry.idOf(CoreCells.ALIVE));
         assertTrue(registry.idOf(impostor).isEmpty());
         assertTrue(registry.resolve("absent").isEmpty());
+    }
+
+    @Test
+    void coreTypesAreAvailableBeforeRegistrationAndLookupStaysLive() {
+        var lookup = new AtomicReference<CellTypeLookup>();
+        var extension = new CellType("test:extension") {
+            @Override
+            public boolean isAlive(CellState state) {
+                return false;
+            }
+        };
+        var reader = plugin("test:reader", registrar -> {
+            lookup.set(registrar.cellTypes());
+            assertSame(CoreCells.EMPTY, CoreCellTypes.empty(lookup.get()));
+            assertSame(CoreCells.ALIVE, CoreCellTypes.alive(lookup.get()));
+            assertTrue(lookup.get().resolve(extension.id()).isEmpty());
+        });
+        var writer = plugin("test:writer", registrar -> registrar.registerCellType(extension));
+        var registry = new HostRegistry(List.of(reader, writer));
+
+        assertSame(extension, lookup.get().resolve(extension.id()).orElseThrow());
+        assertEquals(Optional.of(extension.id()), lookup.get().idOf(extension));
+        assertSame(extension, registry.resolve(extension.id()).orElseThrow());
+        assertThrows(IllegalArgumentException.class, () -> new HostRegistry(List.of(plugin("test:duplicate",
+            registrar -> registrar.registerCellType(CoreCells.ALIVE)))));
+    }
+
+    @Test
+    void recordsAViewReplacementThatRegistersItsView() {
+        var view = new TestView("test:view");
+        var plugin = plugin("test:replacement", registrar -> {
+            registrar.replaceDefault(ApiPoint.VIEW);
+            registrar.registerView(view);
+        });
+        var registry = new HostRegistry(List.of(plugin));
+
+        assertTrue(registry.replacesDefault("test:replacement", ApiPoint.VIEW));
+        assertSame(view, registry.view(view.id()).orElseThrow());
+    }
+
+    @Test
+    void requiresASupportedDefaultAndARegisteredReplacement() {
+        for (ApiPoint point : List.of(ApiPoint.CELL_TYPE, ApiPoint.LIFECYCLE, ApiPoint.VIEW)) {
+            var invalid = plugin("test:replacement", registrar -> registrar.replaceDefault(point));
+            assertThrows(IllegalArgumentException.class, () -> new HostRegistry(List.of(invalid)));
+        }
     }
 
     @Test
@@ -111,8 +159,14 @@ class HostRegistryTest {
         var retained = new AtomicReference<PluginRegistrar>();
         var registry = new HostRegistry(List.of(plugin("test", retained::set)));
 
-        assertThrows(IllegalStateException.class, () -> retained.get().registerCellType(CoreCells.ALIVE));
-        assertTrue(registry.resolve("core:alive").isEmpty());
+        var extension = new CellType("test:late") {
+            @Override
+            public boolean isAlive(CellState state) {
+                return false;
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> retained.get().registerCellType(extension));
+        assertTrue(registry.resolve(extension.id()).isEmpty());
         assertTrue(registry.registrations().isEmpty());
     }
 
@@ -140,6 +194,14 @@ class HostRegistryTest {
         public Accessor<GridPos> bind(BoardState snapshot) {
             throw new UnsupportedOperationException();
         }
+    }
+
+    private record TestView(String id) implements ViewPlugin {
+        @Override
+        public void attach(ModelPort model, ControllerPort controller) {}
+
+        @Override
+        public void detach() {}
     }
 
     private record TestTool(String id) implements InputTool {

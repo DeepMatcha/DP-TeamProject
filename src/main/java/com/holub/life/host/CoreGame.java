@@ -13,6 +13,7 @@ import com.holub.life.api.PluginRegistrar;
 import com.holub.life.api.PluginSelection;
 import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.ToolInput;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -29,20 +30,25 @@ public final class CoreGame {
     private CoreGame() {}
 
     public static HostController newSession(BoardSize size, long seed) {
-        var registry = new HostRegistry(List.of(
+        return newSession(size, seed, List.of());
+    }
+
+    /** Creates a standalone session with additional modules registered but not enabled. */
+    public static HostController newSession(BoardSize size, long seed, List<? extends LifePlugin> plugins) {
+        var modules = new ArrayList<>(List.of(
                 plugin(BOARD, registrar -> {
-                    registrar.registerCellType(CoreCells.EMPTY);
-                    registrar.registerCellType(CoreCells.ALIVE);
                     registrar.registerAccessor(new BoundedAccessor());
                     registrar.registerInputTool(new ToggleTool());
                     registrar.registerPatternCodec(new LegacyLifeCodec());
                 }),
                 plugin(CONWAY, registrar -> registrar.registerLifecycle(new CoreConwayRule()))
         ));
+        modules.addAll(List.copyOf(plugins));
+        var registry = new HostRegistry(modules);
         var plan = new SimulationPlan(BoundedAccessor.ID,
                 List.of(new PluginSelection(BOARD, true), new PluginSelection(CONWAY, true)), Map.of());
         var board = new BoardState(size, 0L, seed, Collections.nCopies(size.area(), EMPTY));
-        return new HostController(registry, board, plan);
+        return new HostController(registry, board, plan, CONWAY);
     }
 
     private static LifePlugin plugin(String id, Consumer<PluginRegistrar> registration) {

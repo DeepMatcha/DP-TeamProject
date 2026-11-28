@@ -2,6 +2,7 @@ package com.holub.life.host;
 
 import com.holub.life.api.CellState;
 import com.holub.life.api.CellType;
+import com.holub.life.api.CoreCellTypes;
 
 /** Singleton types owned by the default host. */
 public final class CoreCells {
@@ -14,7 +15,7 @@ public final class CoreCells {
         static final Empty INSTANCE = new Empty();
 
         private Empty() {
-            super("core:empty");
+            super(CoreCellTypes.EMPTY_ID);
         }
 
         @Override
@@ -27,7 +28,7 @@ public final class CoreCells {
         static final Alive INSTANCE = new Alive();
 
         private Alive() {
-            super("core:alive");
+            super(CoreCellTypes.ALIVE_ID);
         }
 
         @Override

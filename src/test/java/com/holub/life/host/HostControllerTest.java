@@ -420,8 +420,6 @@ class HostControllerTest {
 
             @Override
             public void register(PluginRegistrar registrar) {
-                registrar.registerCellType(CoreCells.EMPTY);
-                registrar.registerCellType(CoreCells.ALIVE);
                 registrar.registerAccessor(new BoundedAccessor());
             }
         };

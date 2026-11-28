@@ -3,6 +3,8 @@ package com.holub.life.host;
 import com.holub.life.api.AccessorFactory;
 import com.holub.life.api.ApiPoint;
 import com.holub.life.api.CellType;
+import com.holub.life.api.CellTypeLookup;
+import com.holub.life.api.CoreCellTypes;
 import com.holub.life.api.GridPos;
 import com.holub.life.api.InputTool;
 import com.holub.life.api.LifePlugin;
@@ -17,18 +19,21 @@ import com.holub.life.api.ViewPlugin;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** The host's immutable catalog of the modules registered at startup. */
 public final class HostRegistry implements RegistryView {
     private final List<PluginInfo> plugins;
     private final List<RegistrationInfo> registrations;
-    private final Map<String, CellType> cellTypes;
+    private final CellTypeLookup cellTypes;
     private final Map<String, AccessorFactory<GridPos>> accessors;
     private final Map<String, InputTool> inputTools;
     private final Map<String, SnapshotCodec> snapshotCodecs;
@@ -36,6 +41,7 @@ public final class HostRegistry implements RegistryView {
     private final Map<String, ViewPlugin> views;
     private final Map<String, List<LifecycleManager>> lifecycleStages;
     private final Map<String, String> pluginVersions;
+    private final Map<String, Set<ApiPoint>> defaultReplacements;
 
     public HostRegistry(List<? extends LifePlugin> plugins) {
         this(plugins, Map.of());
@@ -64,7 +70,9 @@ public final class HostRegistry implements RegistryView {
             var registrar = new Registrar(pluginId, builder);
             try {
                 plugin.register(registrar);
+                registrar.validateDefaultReplacements();
                 builder.lifecycleStages.put(pluginId, List.copyOf(registrar.stages));
+                builder.defaultReplacements.put(pluginId, Set.copyOf(registrar.defaultReplacements));
             } finally {
                 registrar.close();
             }
@@ -72,7 +80,7 @@ public final class HostRegistry implements RegistryView {
 
         this.plugins = List.copyOf(catalog);
         registrations = List.copyOf(builder.registrations);
-        cellTypes = Map.copyOf(builder.cellTypes);
+        cellTypes = builder.cellTypes;
         accessors = Map.copyOf(builder.accessors);
         inputTools = Map.copyOf(builder.inputTools);
         snapshotCodecs = Map.copyOf(builder.snapshotCodecs);
@@ -80,6 +88,7 @@ public final class HostRegistry implements RegistryView {
         views = Map.copyOf(builder.views);
         lifecycleStages = Map.copyOf(builder.lifecycleStages);
         pluginVersions = Map.copyOf(versions);
+        defaultReplacements = Map.copyOf(builder.defaultReplacements);
     }
 
     @Override
@@ -94,15 +103,12 @@ public final class HostRegistry implements RegistryView {
 
     @Override
     public Optional<CellType> resolve(String typeId) {
-        return lookup(cellTypes, typeId);
+        return cellTypes.resolve(typeId);
     }
 
     @Override
     public Optional<String> idOf(CellType type) {
-        if (type != null && cellTypes.get(type.id()) == type) {
-            return Optional.of(type.id());
-        }
-        return Optional.empty();
+        return cellTypes.idOf(type);
     }
 
     @Override
@@ -138,25 +144,51 @@ public final class HostRegistry implements RegistryView {
         return pluginVersions;
     }
 
+    boolean replacesDefault(String pluginId, ApiPoint point) {
+        return defaultReplacements.getOrDefault(pluginId, Set.of()).contains(point);
+    }
+
     private static <T> Optional<T> lookup(Map<String, T> modules, String id) {
         return id == null ? Optional.empty() : Optional.ofNullable(modules.get(id));
     }
 
+    /** The lookup may outlive the registration callback; only the registrar can add entries. */
+    private static final class RegisteredCellTypes implements CellTypeLookup {
+        private final Map<String, CellType> types = new ConcurrentHashMap<>(Map.of(
+                CoreCellTypes.EMPTY_ID, CoreCells.EMPTY,
+                CoreCellTypes.ALIVE_ID, CoreCells.ALIVE));
+
+        @Override
+        public Optional<CellType> resolve(String typeId) {
+            return lookup(types, typeId);
+        }
+
+        @Override
+        public Optional<String> idOf(CellType type) {
+            if (type != null && types.get(type.id()) == type) {
+                return Optional.of(type.id());
+            }
+            return Optional.empty();
+        }
+    }
+
     private static final class RegistryBuilder {
         final List<RegistrationInfo> registrations = new ArrayList<>();
-        final Map<String, CellType> cellTypes = new HashMap<>();
+        final RegisteredCellTypes cellTypes = new RegisteredCellTypes();
         final Map<String, AccessorFactory<GridPos>> accessors = new HashMap<>();
         final Map<String, InputTool> inputTools = new HashMap<>();
         final Map<String, SnapshotCodec> snapshotCodecs = new HashMap<>();
         final Map<String, PatternCodec> patternCodecs = new HashMap<>();
         final Map<String, ViewPlugin> views = new HashMap<>();
         final Map<String, List<LifecycleManager>> lifecycleStages = new HashMap<>();
+        final Map<String, Set<ApiPoint>> defaultReplacements = new HashMap<>();
     }
 
     private static final class Registrar implements PluginRegistrar {
         private final String pluginId;
         private final Map<ApiPoint, Integer> nextIndex = new EnumMap<>(ApiPoint.class);
         private final List<LifecycleManager> stages = new ArrayList<>();
+        private final Set<ApiPoint> defaultReplacements = EnumSet.noneOf(ApiPoint.class);
         private RegistryBuilder builder;
 
         Registrar(String pluginId, RegistryBuilder builder) {
@@ -187,7 +219,7 @@ public final class HostRegistry implements RegistryView {
 
         @Override
         public void registerCellType(CellType type) {
-            register(ApiPoint.CELL_TYPE, type.id(), type, activeBuilder().cellTypes);
+            register(ApiPoint.CELL_TYPE, type.id(), type, activeBuilder().cellTypes.types);
         }
 
         @Override
@@ -222,6 +254,29 @@ public final class HostRegistry implements RegistryView {
         @Override
         public void registerView(ViewPlugin view) {
             register(ApiPoint.VIEW, view.id(), view, activeBuilder().views);
+        }
+
+        @Override
+        public CellTypeLookup cellTypes() {
+            return activeBuilder().cellTypes;
+        }
+
+        @Override
+        public void replaceDefault(ApiPoint point) {
+            activeBuilder();
+            if (point != ApiPoint.LIFECYCLE && point != ApiPoint.VIEW) {
+                throw new IllegalArgumentException("No built-in module for " + point);
+            }
+            defaultReplacements.add(point);
+        }
+
+        private void validateDefaultReplacements() {
+            if (defaultReplacements.contains(ApiPoint.LIFECYCLE) && stages.isEmpty()) {
+                throw new IllegalArgumentException("Missing replacement lifecycle for " + pluginId);
+            }
+            if (defaultReplacements.contains(ApiPoint.VIEW) && !nextIndex.containsKey(ApiPoint.VIEW)) {
+                throw new IllegalArgumentException("Missing replacement view for " + pluginId);
+            }
         }
     }
 }

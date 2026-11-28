@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.holub.life.api.Accessor;
 import com.holub.life.api.AccessorFactory;
+import com.holub.life.api.ApiPoint;
 import com.holub.life.api.BoardSize;
 import com.holub.life.api.BoardState;
 import com.holub.life.api.CellSample;
@@ -108,6 +109,32 @@ class HostGameEngineTest {
         for (CellState cell : result.cells()) {
             assertFalse(cell.properties().containsKey(MARK_PROPERTY));
         }
+    }
+
+    @Test
+    void enabledReplacementSuppressesOnlyTheDesignatedDefaultLifecycle() {
+        String replacementId = "test:replace-default";
+        LifePlugin replacement = plugin(replacementId, registrar -> {
+            registrar.replaceDefault(ApiPoint.LIFECYCLE);
+            FakePhase2Plugins.mark().register(registrar);
+        });
+        HostGameEngine engine = engine(replacement, FakePhase2Plugins.observe());
+        var center = new GridPos(0, 0);
+        BoardState source = board(2, 2, center);
+        var enabled = plan(CORE, replacementId, OBSERVE_ID);
+
+        // The default Conway rule would kill this isolated cell. The replacement marks it,
+        // while the other enabled stage still observes the full marked board.
+        BoardState replaced = engine.calcNext(source, enabled);
+        assertSame(CoreCells.ALIVE, replaced.cellAt(center).type());
+        assertEquals(List.of("3", "3", "3", "3"), counts(replaced));
+
+        var disabled = new SimulationPlan(BoundedAccessor.ID,
+            List.of(new PluginSelection(CORE, true), new PluginSelection(replacementId, false),
+                new PluginSelection(OBSERVE_ID, true)), Map.of());
+        BoardState restored = engine.calcNext(source, disabled);
+        assertSame(CoreCells.EMPTY, restored.cellAt(center).type());
+        assertEquals(List.of("0", "0", "0", "0"), counts(restored));
     }
 
     @Test
@@ -222,13 +249,11 @@ class HostGameEngineTest {
     private static HostGameEngine engine(LifePlugin... plugins) {
         var all = new ArrayList<LifePlugin>();
         all.add(plugin(CORE, registrar -> {
-            registrar.registerCellType(CoreCells.EMPTY);
-            registrar.registerCellType(CoreCells.ALIVE);
             registrar.registerAccessor(new BoundedAccessor());
             registrar.registerLifecycle(new CoreConwayRule());
         }));
         all.addAll(List.of(plugins));
-        return new HostGameEngine(new HostRegistry(all));
+        return new HostGameEngine(new HostRegistry(all), CORE);
     }
 
     private static SimulationPlan plan(String... ids) {

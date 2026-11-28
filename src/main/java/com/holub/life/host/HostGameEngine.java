@@ -2,6 +2,7 @@ package com.holub.life.host;
 
 import com.holub.life.api.Accessor;
 import com.holub.life.api.AccessorFactory;
+import com.holub.life.api.ApiPoint;
 import com.holub.life.api.BoardSize;
 import com.holub.life.api.BoardState;
 import com.holub.life.api.CellState;
@@ -23,11 +24,20 @@ import java.util.stream.Collectors;
 public final class HostGameEngine implements GameEngine {
     private final HostRegistry registry;
     private final Set<String> pluginIds;
+    private final String defaultLifecyclePluginId;
 
     public HostGameEngine(HostRegistry registry) {
+        this(registry, null);
+    }
+
+    HostGameEngine(HostRegistry registry, String defaultLifecyclePluginId) {
         this.registry = Objects.requireNonNull(registry, "registry");
         pluginIds = registry.plugins().stream().map(PluginInfo::id)
             .collect(Collectors.toUnmodifiableSet());
+        if (defaultLifecyclePluginId != null) {
+            requirePlugin(defaultLifecyclePluginId);
+        }
+        this.defaultLifecyclePluginId = defaultLifecyclePluginId;
     }
 
     @Override
@@ -40,11 +50,15 @@ public final class HostGameEngine implements GameEngine {
         long tickSeed = source.seed() ^ (source.generation() * 0x9E3779B97F4A7C15L);
         var random = new SplittableRandom(tickSeed);
         BoardState currentStage = source;
+        boolean replacesDefault = defaultLifecyclePluginId != null && plan.plugins().stream()
+            .anyMatch(plugin -> plugin.enabled() && !plugin.pluginId().equals(defaultLifecyclePluginId)
+                && registry.replacesDefault(plugin.pluginId(), ApiPoint.LIFECYCLE));
         for (PluginSelection plugin : plan.plugins()) {
-            if (plugin.enabled()) {
-                for (LifecycleManager stage : registry.lifecycleStages(plugin.pluginId())) {
-                    currentStage = evaluateStage(currentStage, factory, stage, random);
-                }
+            if (!plugin.enabled() || (replacesDefault && plugin.pluginId().equals(defaultLifecyclePluginId))) {
+                continue;
+            }
+            for (LifecycleManager stage : registry.lifecycleStages(plugin.pluginId())) {
+                currentStage = evaluateStage(currentStage, factory, stage, random);
             }
         }
         return new BoardState(source.size(), nextGeneration, source.seed(), currentStage.cells());

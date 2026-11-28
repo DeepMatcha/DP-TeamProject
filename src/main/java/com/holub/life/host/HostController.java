@@ -48,8 +48,12 @@ public final class HostController implements ControllerPort, AutoCloseable {
     private ScheduledFuture<?> timer;
 
     public HostController(HostRegistry registry, BoardState initial, SimulationPlan plan) {
+        this(registry, initial, plan, null);
+    }
+
+    HostController(HostRegistry registry, BoardState initial, SimulationPlan plan, String defaultLifecyclePluginId) {
         this.registry = Objects.requireNonNull(registry);
-        engine = new HostGameEngine(registry);
+        engine = new HostGameEngine(registry, defaultLifecyclePluginId);
         engine.validateBoard(initial);
         engine.validatePlan(plan);
         model = new HostBoardModel(initial);
