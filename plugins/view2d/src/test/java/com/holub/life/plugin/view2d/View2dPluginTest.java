@@ -10,6 +10,8 @@ import com.holub.life.api.GridPos;
 import com.holub.life.api.InputTool;
 import com.holub.life.api.LifePlugin;
 import com.holub.life.api.PluginRegistrar;
+import com.holub.life.api.PluginSelection;
+import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.ToolInput;
 import com.holub.life.testkit.Boards;
 import com.holub.life.testkit.FakeHost;
@@ -22,8 +24,11 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class View2dPluginTest {
     private static final CellType MARKED = new CellType("test:marked") {
@@ -106,5 +111,24 @@ class View2dPluginTest {
         assertEquals(MARKED_STATE, Boards.at(after, 1, 1));
         assertEquals(after, session.snapshot(), "the edit was committed to the Model, not drawn locally");
         assertEquals(1, after.cells().stream().filter(MARKED_STATE::equals).count());
+    }
+
+    @Test
+    void toolOfADisabledPluginIsRejectedWithoutEditingTheModel() {
+        FakeHost host = new FakeHost().load(new View2dPlugin()).load(MARKER);
+        FakeSession session = new FakeSession(host, Boards.parse("..", ".."));
+        BoardState before = session.snapshot();
+        SimulationPlan plan = session.session().toCompletableFuture().join().plan();
+        session.configure(new SimulationPlan(plan.accessorId(), List.of(
+                new PluginSelection(View2dPlugin.ID, true),
+                new PluginSelection("test:marker", false)), Map.of()));
+        Board2dView view = (Board2dView) host.view(Board2dView.ID).orElseThrow();
+        view.attach(session, session);
+
+        var failure = assertThrows(CompletionException.class,
+                () -> view.useTool("test:mark", new GridPos(1, 1)).toCompletableFuture().join());
+
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertEquals(before, session.snapshot(), "the host's plan, not the view, decides which tools may edit");
     }
 }
