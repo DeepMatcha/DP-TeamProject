@@ -1,5 +1,5 @@
 import com.holub.life.Life;
-import com.holub.life.api.LifePlugin;
+import com.holub.life.host.PluginDirectory;
 
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -13,20 +13,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
-import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
-/** Release-artifact smoke checks. Both modes use the caller's real application classpath. */
+/** Smoke checks against the shipped host JAR and its optional plug-in directory. */
 public final class DesktopMergeAcceptance {
     private static final Set<String> REQUIRED_PROVIDERS = Set.of(
             "codec", "foodaging", "obstacle", "toroidal", "view2d", "view3d");
@@ -35,27 +36,45 @@ public final class DesktopMergeAcceptance {
 
     public static void main(String[] arguments) throws Exception {
         if (arguments.length != 1) {
-            throw new IllegalArgumentException("Specify desktop or providers");
+            throw new IllegalArgumentException("Specify desktop, providers or plugins");
         }
         switch (arguments[0]) {
             case "desktop" -> desktop();
             case "providers" -> providers();
+            case "plugins" -> plugins();
             default -> throw new IllegalArgumentException("Unknown acceptance mode: " + arguments[0]);
         }
     }
 
-    private static void providers() {
-        Map<String, String> providers = new TreeMap<>();
-        for (LifePlugin plugin : ServiceLoader.load(LifePlugin.class)) {
-            String id = plugin.id();
-            check(providers.putIfAbsent(id, plugin.getClass().getName()) == null,
-                    "Duplicate plugin provider ID: " + id);
+    private static void providers() throws Exception {
+        try (var directory = PluginDirectory.open()) {
+            Map<String, String> providers = new TreeMap<>();
+            for (var plugin : directory.plugins()) {
+                providers.put(plugin.id(), plugin.getClass().getName());
+            }
+            System.out.println("Distribution plug-in directory: " + directory.directory());
+            System.out.println("Distribution providers: " + providers);
+            var missing = new TreeSet<>(REQUIRED_PROVIDERS);
+            missing.removeAll(providers.keySet());
+            check(missing.isEmpty(), "Missing distribution plug-in providers: " + missing);
+            System.out.println("PASS: runtime loader discovered all six Phase 2 providers.");
         }
-        System.out.println("Distribution providers: " + providers);
-        var missing = new TreeSet<>(REQUIRED_PROVIDERS);
-        missing.removeAll(providers.keySet());
-        check(missing.isEmpty(), "Missing distribution plugin providers: " + missing);
-        System.out.println("PASS: all six Phase 2 providers are discoverable in the distribution.");
+    }
+
+    private static JFrame openMainWindow() throws Exception {
+        Life.main(new String[0]);
+        return await("Life.main did not open a desktop window", () -> edt(() ->
+                Arrays.stream(Window.getWindows()).filter(JFrame.class::isInstance)
+                        .map(JFrame.class::cast).filter(Window::isShowing)
+                        .filter(candidate -> findItem(candidate, "Grid", "Exit") != null)
+                        .findFirst().orElse(null)));
+    }
+
+    private static void closeWindows() throws Exception {
+        edt(() -> {
+            Arrays.stream(Window.getWindows()).forEach(Window::dispose);
+            return null;
+        });
     }
 
     private static void desktop() throws Exception {
@@ -63,12 +82,7 @@ public final class DesktopMergeAcceptance {
         Path directory = Files.createTempDirectory("life-acceptance-");
         Path pattern = directory.resolve("roundtrip.life");
         try {
-            Life.main(new String[0]);
-            JFrame frame = await("Life.main did not open a desktop window", () -> edt(() ->
-                    Arrays.stream(Window.getWindows()).filter(JFrame.class::isInstance)
-                            .map(JFrame.class::cast).filter(Window::isShowing)
-                            .filter(candidate -> candidate.getJMenuBar() != null)
-                            .findFirst().orElse(null)));
+            JFrame frame = openMainWindow();
             System.out.println("Desktop menu inventory: " + edt(() -> menus(frame)));
             check(edt(() -> displayedGeneration(frame)) == 0, "Expected a new game at generation zero");
 
@@ -92,7 +106,7 @@ public final class DesktopMergeAcceptance {
                 expectHalted(frame, "Halt after " + preset);
             }
             startAndObserve(frame, "Medium");
-            chooseFile(frame, "Store", pattern);
+            chooseFile(frame, pattern, "Grid", "Store");
             await("Store did not write the pattern", () ->
                     Files.isRegularFile(pattern) && Files.size(pattern) > 0 && edt(frame::isEnabled) ? true : null);
             expectHalted(frame, "Store");
@@ -100,7 +114,7 @@ public final class DesktopMergeAcceptance {
             menu(frame, "Grid", "Clear");
             await("Clear did not remove the block", () -> blockMatches(frame, false) ? true : null);
             startAndObserve(frame, "Medium");
-            chooseFile(frame, "Load", pattern);
+            chooseFile(frame, pattern, "Grid", "Load");
             await("Load did not restore the visible block", () ->
                     edt(frame::isEnabled) && blockMatches(frame, true) ? true : null);
             expectHalted(frame, "Load");
@@ -109,13 +123,109 @@ public final class DesktopMergeAcceptance {
             await("Exit did not close the window", () -> edt(frame::isDisplayable) ? null : true);
             System.out.println("PASS: real Life.main, click, single step, speed controls, halt, clear, .life round trip and exit.");
         } finally {
-            edt(() -> {
-                Arrays.stream(Window.getWindows()).forEach(Window::dispose);
-                return null;
-            });
+            closeWindows();
             Files.deleteIfExists(pattern);
             Files.delete(directory);
         }
+    }
+
+    private static void plugins() throws Exception {
+        check(!GraphicsEnvironment.isHeadless(), "plugins requires a display such as Xvfb");
+        Path directory = Files.createTempDirectory("life-plugin-acceptance-");
+        Path checkpoint = directory.resolve("checkpoint.json");
+        Path restored = directory.resolve("restored.json");
+        try {
+            JFrame frame = openMainWindow();
+            System.out.println("Desktop menu inventory: " + edt(() -> menus(frame)));
+            for (String id : new TreeSet<>(REQUIRED_PROVIDERS)) {
+                check(edt(() -> checkboxMatches(frame, id, false)), "Expected " + id + " initially off");
+            }
+            check(!edt(() -> itemIsVisible(frame, "Grid", "Session files")),
+                    "The session codec starts off with its menu hidden");
+
+            menu(frame, "Go", "Tick (Single Step)");
+            await("Could not advance to generation 1",
+                    () -> edt(() -> displayedGeneration(frame)) == 1 ? true : null);
+            click(frame, 20, 22);
+            await("Could not edit the checkpoint cell", () -> changed(frame, 20, 22) ? true : null);
+
+            for (String id : new String[]{"toroidal", "foodaging", "obstacle"}) {
+                toggle(frame, id, true);
+                check(edt(() -> displayedGeneration(frame)) == 1 && changed(frame, 20, 22),
+                        id + " toggle changed the board or generation");
+            }
+            await("Obstacle did not expose its input tool menu",
+                    () -> edt(() -> itemIsVisible(frame, "Tools", "obstacle:toggle-wall")) ? true : null);
+
+            toggle(frame, "view2d", true);
+            await("Enabling view2d did not show a secondary window", () -> hasPeerWindow(frame) ? true : null);
+            toggle(frame, "view2d", false);
+            await("Disabling view2d did not close its window", () -> hasPeerWindow(frame) ? null : true);
+
+            toggle(frame, "codec", true);
+            for (String format : new String[]{"codec:json", "codec:binary"}) {
+                for (String action : new String[]{"Save session…", "Load session…"}) {
+                    await("Missing session " + format + " action: " + action, () ->
+                            edt(() -> itemIsVisible(frame, "Grid", "Session files", format, action)) ? true : null);
+                }
+            }
+            saveJson(frame, checkpoint);
+            check(Files.readString(checkpoint).contains("toroidal:wrap"),
+                    "The checkpoint did not record the toroidal accessor");
+
+            for (String id : new String[]{"obstacle", "foodaging", "toroidal"}) {
+                toggle(frame, id, false);
+            }
+            menu(frame, "Grid", "Clear");
+            await("Clear did not remove the checkpoint cell", () -> changed(frame, 20, 22) ? null : true);
+            menu(frame, "Go", "Tick (Single Step)");
+            await("Could not move beyond the checkpoint",
+                    () -> edt(() -> displayedGeneration(frame)) == 2 ? true : null);
+
+            chooseFile(frame, checkpoint, "Grid", "Session files", "codec:json", "Load session…");
+            await("JSON load did not restore the visible board, generation, and plug-in plan", () ->
+                    edt(() -> frame.isEnabled() && displayedGeneration(frame) == 1
+                        && checkboxMatches(frame, "toroidal", true)
+                        && checkboxMatches(frame, "foodaging", true)
+                        && checkboxMatches(frame, "obstacle", true))
+                    && changed(frame, 20, 22) ? true : null);
+            saveJson(frame, restored);
+            check(Files.mismatch(checkpoint, restored) == -1,
+                    "Re-saving the restored session changed the serialized board or plan");
+
+            menu(frame, "Grid", "Exit");
+            await("Exit did not close the window", () -> edt(frame::isDisplayable) ? null : true);
+            System.out.println("PASS: default-off plug-ins, board-preserving switches, 2D view lifecycle, "
+                    + "codec menus, JSON session and plan round trip.");
+        } finally {
+            closeWindows();
+            Files.deleteIfExists(checkpoint);
+            Files.deleteIfExists(restored);
+            Files.delete(directory);
+        }
+    }
+
+    private static void saveJson(JFrame frame, Path file) throws Exception {
+        chooseFile(frame, file, "Grid", "Session files", "codec:json", "Save session…");
+        await("JSON save did not complete", () ->
+                Files.isRegularFile(file) && Files.size(file) > 0 && edt(frame::isEnabled) ? true : null);
+    }
+
+    private static void toggle(JFrame frame, String id, boolean enabled) throws Exception {
+        menu(frame, "Plugins", id);
+        // Swing selects the box optimistically, then disables it until the host answers.
+        await("Host did not accept the " + id + " switch to " + enabled, () ->
+                edt(() -> checkboxMatches(frame, id, enabled)) ? true : null);
+    }
+
+    private static boolean checkboxMatches(JFrame frame, String id, boolean enabled) {
+        return findItem(frame, "Plugins", id) instanceof JCheckBoxMenuItem box
+                && box.isEnabled() && box.isSelected() == enabled;
+    }
+
+    private static boolean hasPeerWindow(JFrame main) throws Exception {
+        return edt(() -> Arrays.stream(Window.getWindows())
+                .anyMatch(window -> window != main && window instanceof JFrame && window.isShowing()));
     }
 
     private static void startAndObserve(JFrame frame, String preset) throws Exception {
@@ -134,10 +244,10 @@ public final class DesktopMergeAcceptance {
                 action + " did not stop autonomous ticks");
     }
 
-    private static void chooseFile(JFrame frame, String item, Path file) throws Exception {
-        JMenuItem command = edt(() -> findItem(frame, "Grid", item));
+    private static void chooseFile(JFrame frame, Path file, String... path) throws Exception {
+        JMenuItem command = edt(() -> requireItem(frame, path));
         SwingUtilities.invokeLater(() -> command.doClick(0));
-        await(item + " did not open the file chooser", () -> edt(() -> {
+        await(String.join(" > ", path) + " did not open the file chooser", () -> edt(() -> {
             for (Window owned : frame.getOwnedWindows()) {
                 JFileChooser chooser = owned.isShowing() ? find(owned, JFileChooser.class) : null;
                 if (chooser != null) {
@@ -218,27 +328,48 @@ public final class DesktopMergeAcceptance {
         return (JPanel) ((BorderLayout) content.getLayout()).getLayoutComponent(BorderLayout.CENTER);
     }
 
-    private static void menu(JFrame frame, String menu, String title) throws Exception {
+    private static void menu(JFrame frame, String... path) throws Exception {
         edt(() -> {
-            findItem(frame, menu, title).doClick(0);
+            requireItem(frame, path).doClick(0);
             return null;
         });
     }
 
-    private static JMenuItem findItem(JFrame frame, String menu, String title) {
+    private static JMenuItem requireItem(JFrame frame, String... path) {
+        JMenuItem command = findItem(frame, path);
+        check(command != null && command.isVisible() && command.isEnabled(),
+                "Missing or unavailable menu action: " + String.join(" > ", path));
+        return command;
+    }
+
+    private static boolean itemIsVisible(JFrame frame, String... path) {
+        JMenuItem item = findItem(frame, path);
+        return item != null && item.isVisible();
+    }
+
+    private static JMenuItem findItem(JFrame frame, String... path) {
         var bar = frame.getJMenuBar();
+        if (bar == null || path.length == 0) return null;
+        JMenuItem current = null;
         for (int index = 0; index < bar.getMenuCount(); index++) {
-            var group = bar.getMenu(index);
-            if (group != null && menu.equals(group.getText())) {
-                for (int item = 0; item < group.getItemCount(); item++) {
-                    JMenuItem command = group.getItem(item);
-                    if (command != null && title.equals(command.getText())) {
-                        return command;
-                    }
+            var menu = bar.getMenu(index);
+            if (menu != null && path[0].equals(menu.getText())) {
+                current = menu;
+                break;
+            }
+        }
+        for (int index = 1; index < path.length; index++) {
+            if (!(current instanceof JMenu menu) || !menu.isVisible()) return null;
+            current = null;
+            for (int childIndex = 0; childIndex < menu.getItemCount(); childIndex++) {
+                JMenuItem child = menu.getItem(childIndex);
+                if (child != null && path[index].equals(child.getText())) {
+                    current = child;
+                    break;
                 }
             }
         }
-        throw new AssertionError("Missing menu action: " + menu + " > " + title);
+        return current;
     }
 
     private static String menus(JFrame frame) {
