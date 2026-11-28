@@ -13,13 +13,16 @@ import com.holub.life.api.HostErrorListener;
 import com.holub.life.api.ModelPort;
 import com.holub.life.api.Pattern;
 import com.holub.life.api.PlaybackState;
+import com.holub.life.api.PluginInfo;
 import com.holub.life.api.PluginSelection;
+import com.holub.life.api.RegistrationInfo;
 import com.holub.life.api.RegistryView;
 import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.ToolInput;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceConfigurationError;
@@ -30,6 +33,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /** Serializes session mutations and schedules ticks independently of the View. */
@@ -40,10 +44,13 @@ public final class HostController implements ControllerPort, AutoCloseable {
     private final HostGameEngine engine;
     private final HostBoardModel model;
     private final ScheduledThreadPoolExecutor operations;
+    private final String defaultAccessorId;
+    private final List<String> catalogOrder;
     private final CopyOnWriteArrayList<HostErrorListener> errorListeners = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Consumer<SimulationPlan>> planListeners = new CopyOnWriteArrayList<>();
 
-    // These fields are owned by the operations thread.
-    private SimulationPlan plan;
+    // Only the operations thread changes these fields. Views may read the immutable plan.
+    private volatile SimulationPlan plan;
     private int intervalMillis = 150;
     private ScheduledFuture<?> timer;
 
@@ -57,6 +64,8 @@ public final class HostController implements ControllerPort, AutoCloseable {
         engine.validateBoard(initial);
         engine.validatePlan(plan);
         model = new HostBoardModel(initial);
+        defaultAccessorId = plan.accessorId();
+        catalogOrder = registry.plugins().stream().map(PluginInfo::id).toList();
         this.plan = plan;
         operations = new ScheduledThreadPoolExecutor(1, task -> {
             var thread = new Thread(task, "life-host-operations");
@@ -92,9 +101,8 @@ public final class HostController implements ControllerPort, AutoCloseable {
         Objects.requireNonNull(toolId);
         Objects.requireNonNull(input);
         return submit(() -> {
-            boolean enabled = registry.registrations().stream().anyMatch(registration ->
-                    registration.point() == ApiPoint.INPUT_TOOL && registration.id().equals(toolId)
-                        && plan.plugins().contains(new PluginSelection(registration.pluginId(), true)));
+            boolean enabled = activeRegistrations(plan, ApiPoint.INPUT_TOOL).stream()
+                    .anyMatch(registration -> registration.id().equals(toolId));
             if (!enabled) {
                 throw new IllegalArgumentException("Input tool is not enabled: " + toolId);
             }
@@ -239,6 +247,7 @@ public final class HostController implements ControllerPort, AutoCloseable {
             stopTimer();
             plan = snapshot.plan();
             model.commit(snapshot.board());
+            publishPlan();
             return snapshot.board();
         });
     }
@@ -272,10 +281,126 @@ public final class HostController implements ControllerPort, AutoCloseable {
     public CompletionStage<Void> configure(SimulationPlan next) {
         Objects.requireNonNull(next);
         return submit(() -> {
-            engine.validatePlan(next);
-            plan = next;
+            configurePlan(next);
             return null;
         });
+    }
+
+    /**
+     * Switches one provider at the operation boundary without replacing the board.
+     * Enabling a provider with accessors selects its first registered accessor unless
+     * one of its accessors is already selected. Removing the active provider prefers
+     * the host's initial accessor, then the first enabled accessor in plan order.
+     */
+    public CompletionStage<Void> setPluginEnabled(String pluginId, boolean enabled) {
+        Objects.requireNonNull(pluginId, "pluginId");
+        return submit(() -> {
+            if (!catalogOrder.contains(pluginId)) {
+                throw new IllegalArgumentException("Unknown plugin: " + pluginId);
+            }
+            var accessors = registry.registrations().stream()
+                    .filter(registration -> registration.point() == ApiPoint.ACCESSOR
+                            && registration.pluginId().equals(pluginId))
+                    .map(RegistrationInfo::id)
+                    .toList();
+            boolean ownsActiveAccessor = accessors.contains(plan.accessorId());
+            boolean wasEnabled = plan.plugins().contains(new PluginSelection(pluginId, true));
+            if (wasEnabled == enabled && (enabled || !ownsActiveAccessor)) {
+                return null;
+            }
+
+            List<PluginSelection> selections = selectionsWith(new PluginSelection(pluginId, enabled));
+            String accessor = plan.accessorId();
+            if (enabled && !ownsActiveAccessor && !accessors.isEmpty()) {
+                accessor = accessors.getFirst();
+            } else if (!enabled && ownsActiveAccessor) {
+                accessor = fallbackAccessor(selections);
+            }
+            configurePlan(new SimulationPlan(accessor, selections, plan.pluginOptions()));
+            return null;
+        });
+    }
+
+    private List<PluginSelection> selectionsWith(PluginSelection updated) {
+        var selections = new ArrayList<>(plan.plugins());
+        int catalogIndex = catalogOrder.indexOf(updated.pluginId());
+        int insertAt = selections.size();
+        for (int i = 0; i < selections.size(); i++) {
+            String id = selections.get(i).pluginId();
+            if (id.equals(updated.pluginId())) {
+                selections.set(i, updated);
+                return selections;
+            }
+            if (insertAt == selections.size() && catalogOrder.indexOf(id) > catalogIndex) {
+                insertAt = i;
+            }
+        }
+        selections.add(insertAt, updated);
+        return selections;
+    }
+
+    private String fallbackAccessor(List<PluginSelection> selections) {
+        // An explicit standalone plan can use its initial accessor without a selection
+        // entry for the owner. A switch must never fall back to an explicitly disabled owner.
+        var defaultRegistration = registry.registrations().stream()
+                .filter(registration -> registration.point() == ApiPoint.ACCESSOR
+                        && registration.id().equals(defaultAccessorId))
+                .findFirst().orElseThrow();
+        if (!selections.contains(new PluginSelection(defaultRegistration.pluginId(), false))) {
+            return defaultAccessorId;
+        }
+        return activeRegistrations(selections, ApiPoint.ACCESSOR).stream()
+                .map(RegistrationInfo::id)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("No accessor remains enabled"));
+    }
+
+    private void configurePlan(SimulationPlan next) {
+        engine.validatePlan(next);
+        plan = next;
+        publishPlan();
+    }
+
+    /** For View startup. Use session() when the plan and board must be captured together. */
+    SimulationPlan currentPlan() {
+        return plan;
+    }
+
+    List<RegistrationInfo> activeRegistrations(SimulationPlan current, ApiPoint point) {
+        return activeRegistrations(current.plugins(), point);
+    }
+
+    private List<RegistrationInfo> activeRegistrations(List<PluginSelection> selections, ApiPoint point) {
+        return selections.stream()
+                .filter(PluginSelection::enabled)
+                .flatMap(selection -> registry.registrations().stream()
+                        .filter(registration -> registration.point() == point
+                                && registration.pluginId().equals(selection.pluginId())))
+                .toList();
+    }
+
+    boolean replacesDefaultView(SimulationPlan current) {
+        return current.plugins().stream().anyMatch(selection -> selection.enabled()
+                && registry.replacesDefault(selection.pluginId(), ApiPoint.VIEW));
+    }
+
+    /** Receives the committed plan on the host operation thread after configure or restore. */
+    public void addPlanListener(Consumer<SimulationPlan> listener) {
+        planListeners.add(Objects.requireNonNull(listener));
+    }
+
+    public void removePlanListener(Consumer<SimulationPlan> listener) {
+        planListeners.remove(listener);
+    }
+
+    private void publishPlan() {
+        for (Consumer<SimulationPlan> listener : planListeners) {
+            try {
+                listener.accept(plan);
+            } catch (RuntimeException | AssertionError | LinkageError | ServiceConfigurationError error) {
+                LOG.log(System.Logger.Level.WARNING, "Plan listener failed", error);
+            }
+        }
     }
 
     @Override
