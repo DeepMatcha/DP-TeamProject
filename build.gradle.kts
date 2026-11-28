@@ -19,6 +19,14 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Exercise the shipped plug-in service providers on the real host.
+    testRuntimeOnly(project(":plugins:codec"))
+    testRuntimeOnly(project(":plugins:food-aging"))
+    testRuntimeOnly(project(":plugins:obstacle"))
+    testRuntimeOnly(project(":plugins:toroidal"))
+    testRuntimeOnly(project(":plugins:view2d"))
+    testRuntimeOnly(project(":plugins:view3d"))
 }
 
 tasks.test {
