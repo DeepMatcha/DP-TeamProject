@@ -1,21 +1,19 @@
 package com.holub.life;
 
-import java.awt.*;
-import java.awt.event.*;
-import java.util.*;
-import java.io.*;
-import javax.swing.*;
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Point;
+import java.awt.Rectangle;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.OutputStream;
+import java.util.Collection;
+import java.util.LinkedList;
 
-import com.holub.io.Files;
-import com.holub.life.Cell;
-import com.holub.ui.MenuSite;
-import com.holub.ui.Colors;
 import com.holub.asynch.ConditionVariable;
-
-import com.holub.life.Cell;
-import com.holub.life.Clock;
-import com.holub.life.Direction;
-import com.holub.life.Storable;
+import com.holub.ui.Colors;
 
 /***
  * A group of {@link Cell} objects. Cells are grouped into neighborhoods
@@ -79,7 +77,7 @@ public final class Neighborhood implements Cell
 	 *  as the "prototype" argument.
 	 */
 
-	public Cell create()
+	@Override public Cell create()
 	{	return new Neighborhood(gridSize, grid[0][0]);
 	}
 
@@ -97,7 +95,7 @@ public final class Neighborhood implements Cell
 	 *  cells may need to be updated, even if they were previously
 	 *  stable.
 	 */
-	public  Direction isDisruptiveTo(){ return activeEdges; }
+	@Override public Direction isDisruptiveTo(){ return activeEdges; }
 	private	Direction activeEdges = new Direction( Direction.NONE );
 
 	/** Figures the next state of the current neighborhood and the
@@ -120,7 +118,7 @@ public final class Neighborhood implements Cell
 	 *  			 will change state in the next transition.
 	 */
 
-	public boolean figureNextState(	Cell north, 	Cell south,
+	@Override public boolean figureNextState(	Cell north, 	Cell south,
 									Cell east,		Cell west,
 									Cell northeast, Cell northwest,
 									Cell southeast, Cell southwest )
@@ -250,7 +248,7 @@ public final class Neighborhood implements Cell
 	 *  @return true if the transition actually changed anything.
 	 *  @see #figureNextState
 	 */
-	public boolean transition()
+	@Override public boolean transition()
 	{	
 		// The condition variable is set and reset only by the
 		// outermost neighborhood. It's actually incorrect
@@ -333,7 +331,7 @@ public final class Neighborhood implements Cell
 	 *  @see #transition
 	 */
 
-	public void redraw(Graphics g, Rectangle here, boolean drawAll)
+	@Override public void redraw(Graphics g, Rectangle here, boolean drawAll)
 	{	
 		// If the current neighborhood is stable (nothing changed
 		// in the last transition stage), then there's nothing
@@ -391,7 +389,7 @@ public final class Neighborhood implements Cell
 
 	/** Return the edge cell in the indicated row and column.
 	 */
-	public Cell	edge(int row, int column)
+	@Override public Cell	edge(int row, int column)
 	{	assert 	  (row	  == 0 || row	 == gridSize-1)
 			   || (column == 0 || column == gridSize-1)
 			   :  "central cell requested from edge()";
@@ -402,7 +400,7 @@ public final class Neighborhood implements Cell
 	/** Notification of a mouse click. The point is relative to the
 	 *  upper-left corner of the surface.
 	 */
-	public void userClicked(Point here, Rectangle surface)
+	@Override public void userClicked(Point here, Rectangle surface)
 	{
 		int pixelsPerCell = surface.width / gridSize ;
 		int row				= here.y     	/ pixelsPerCell ;
@@ -419,15 +417,15 @@ public final class Neighborhood implements Cell
 		rememberThatCellAtEdgeChangedState(row, column);
 	}
 
-	public boolean isAlive()
+	@Override public boolean isAlive()
 	{	return true;
 	}
 
-	public int widthInCells()
+	@Override public int widthInCells()
 	{	return gridSize * grid[0][0].widthInCells();
 	}
 
-	public void clear()
+	@Override public void clear()
 	{	activeEdges.clear();
 
 		for( int row = 0; row < gridSize; ++row )
@@ -441,7 +439,7 @@ public final class Neighborhood implements Cell
 	 *  memento if they happen to be alive.
 	 */
 
-	public boolean transfer(Storable memento, Point corner,
+	@Override public boolean transfer(Storable memento, Point corner,
 														boolean load)
 	{ 	int   subcellWidth	= grid[0][0].widthInCells();
 		int   myWidth		= widthInCells();
@@ -465,7 +463,7 @@ public final class Neighborhood implements Cell
 		return amActive;
 	}
 
-	public Storable createMemento()
+	@Override public Storable createMemento()
 	{	Memento m = new NeighborhoodState();
 		transfer(m, new Point(0,0), Cell.STORE);
 		return m;
@@ -478,17 +476,18 @@ public final class Neighborhood implements Cell
 	 * rewrite load() and flush() to use XML.
 	 */
 
-	private static class NeighborhoodState implements Cell.Memento
-	{	Collection liveCells = new LinkedList();
+	private static final class NeighborhoodState implements Cell.Memento
+	{	// The original .life format is a serialized LinkedList of Points.
+		private Collection<Point> liveCells = new LinkedList<>();
 
 		public NeighborhoodState( InputStream in ) throws IOException
 												{ load(in); }
 		public NeighborhoodState( 			   ){			}
 
-		public void load( InputStream in ) throws IOException
+		@Override public void load( InputStream in ) throws IOException
 		{	try
 			{	ObjectInputStream source = new ObjectInputStream( in );
-				liveCells = (Collection)( source.readObject() );
+				liveCells = readPoints( source );
 			}
 			catch(ClassNotFoundException e)
 			{	// This exception shouldn't be rethrown as
@@ -502,25 +501,30 @@ public final class Neighborhood implements Cell
 			}
 		}
 
-		public void flush( OutputStream out ) throws IOException
+		/** Serialization erases the element type, so the cast is unchecked. */
+		@SuppressWarnings("unchecked")
+		private static Collection<Point> readPoints( ObjectInputStream source )
+									throws IOException, ClassNotFoundException
+		{	return (Collection<Point>) source.readObject();
+		}
+
+		@Override public void flush( OutputStream out ) throws IOException
 		{	ObjectOutputStream sink = new ObjectOutputStream(out);
 			sink.writeObject( liveCells );
 		}
-	
-		public void markAsAlive(Point location)
+
+		@Override public void markAsAlive(Point location)
 		{	liveCells.add( new Point( location ) );
 		}
 
-		public boolean isAlive(Point location)
+		@Override public boolean isAlive(Point location)
 		{	return liveCells.contains(location);
 		}
 
-		public String toString()
-		{	StringBuffer b = new StringBuffer();
-
-			b.append("NeighborhoodState:\n");
-			for( Iterator i = liveCells.iterator(); i.hasNext() ;)
-				b.append( ((Point) i.next()).toString() + "\n" );
+		@Override public String toString()
+		{	StringBuilder b = new StringBuilder("NeighborhoodState:\n");
+			for( Point live : liveCells )
+				b.append( live ).append( '\n' );
 			return b.toString();
 		}
 	}
