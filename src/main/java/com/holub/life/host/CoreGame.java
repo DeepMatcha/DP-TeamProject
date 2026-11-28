@@ -35,13 +35,13 @@ public final class CoreGame {
 
     /** Creates a standalone session with additional modules registered but not enabled. */
     public static HostController newSession(BoardSize size, long seed, List<? extends LifePlugin> plugins) {
-        var modules = new ArrayList<>(List.of(
-                plugin(BOARD, registrar -> {
+        var modules = new ArrayList<LifePlugin>(List.of(
+                new BuiltInPlugin(BOARD, registrar -> {
                     registrar.registerAccessor(new BoundedAccessor());
                     registrar.registerInputTool(new ToggleTool());
                     registrar.registerPatternCodec(new LegacyLifeCodec());
                 }),
-                plugin(CONWAY, registrar -> registrar.registerLifecycle(new CoreConwayRule()))
+                new BuiltInPlugin(CONWAY, registrar -> registrar.registerLifecycle(new CoreConwayRule()))
         ));
         modules.addAll(List.copyOf(plugins));
         var registry = new HostRegistry(modules);
@@ -51,18 +51,12 @@ public final class CoreGame {
         return new HostController(registry, board, plan, CONWAY);
     }
 
-    private static LifePlugin plugin(String id, Consumer<PluginRegistrar> registration) {
-        return new LifePlugin() {
-            @Override
-            public String id() {
-                return id;
-            }
-
-            @Override
-            public void register(PluginRegistrar registrar) {
-                registration.accept(registrar);
-            }
-        };
+    /** A host-owned module set, registered through the same API as an installed plugin. */
+    private record BuiltInPlugin(String id, Consumer<PluginRegistrar> registration) implements LifePlugin {
+        @Override
+        public void register(PluginRegistrar registrar) {
+            registration.accept(registrar);
+        }
     }
 
     private static final class ToggleTool implements InputTool {

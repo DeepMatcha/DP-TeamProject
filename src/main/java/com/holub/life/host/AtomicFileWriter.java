@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
+/** Writes a file through a temporary sibling, so a failed save never damages the existing file. */
 final class AtomicFileWriter {
     @FunctionalInterface
     interface Encoder {

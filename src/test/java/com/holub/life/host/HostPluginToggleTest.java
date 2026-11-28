@@ -81,9 +81,9 @@ class HostPluginToggleTest {
             assertEquals(MAPPED_ACCESSOR, active.accessorId());
             assertEquals(List.of("core:board", "core:conway", MAPPING, UI), pluginIds(active));
             assertEquals(List.of("core:board", "core:conway", UI), pluginIds(plans.getFirst()));
-            assertEquals(List.of(VIEW), host.activeRegistrations(active, ApiPoint.VIEW).stream()
+            assertEquals(List.of(VIEW), host.registry().activeRegistrations(active, ApiPoint.VIEW).stream()
                     .map(RegistrationInfo::id).toList());
-            assertTrue(host.replacesDefaultView(active));
+            assertTrue(host.registry().replacesDefault(active, ApiPoint.VIEW));
             assertSame(initialBoard, host.model().snapshot());
             assertTrue(boards.isEmpty());
             assertEquals(new PlaybackState(true, 60_000), await(host.playbackState()));
@@ -97,8 +97,8 @@ class HostPluginToggleTest {
             var disabled = host.currentPlan();
             assertEquals(BoundedAccessor.ID, disabled.accessorId());
             assertEquals(pluginIds(active), pluginIds(disabled));
-            assertTrue(host.activeRegistrations(disabled, ApiPoint.VIEW).isEmpty());
-            assertFalse(host.replacesDefaultView(disabled));
+            assertTrue(host.registry().activeRegistrations(disabled, ApiPoint.VIEW).isEmpty());
+            assertFalse(host.registry().replacesDefault(disabled, ApiPoint.VIEW));
             assertTrue(host.registry().view(VIEW).isPresent(), "the catalog also lists disabled modules");
             assertSame(painted, host.model().snapshot());
             assertSame(EXTENSION, painted.cellAt(origin).type());

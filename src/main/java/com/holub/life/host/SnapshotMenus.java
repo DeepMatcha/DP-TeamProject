@@ -37,7 +37,7 @@ final class SnapshotMenus {
 
     void planChanged(SimulationPlan plan) {
         formats.removeAll();
-        for (var registration : host.activeRegistrations(plan, ApiPoint.SNAPSHOT_CODEC)) {
+        for (var registration : host.registry().activeRegistrations(plan, ApiPoint.SNAPSHOT_CODEC)) {
             SnapshotCodec codec = host.registry().snapshotCodec(registration.id()).orElseThrow();
             var format = new JMenu(registration.id());
             var save = new JMenuItem("Save session…");

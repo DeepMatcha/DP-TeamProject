@@ -14,7 +14,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Read-only view of a rule's stage input around one canonical cell. */
+/**
+ * Read-only view of a rule's stage input around one canonical cell. Coordinates are resolved
+ * by the plan's {@code Accessor} (Strategy), so the same rule runs on a bounded or wrapped board.
+ */
 final class SnapshotNeighborBoard implements NeighborBoard {
     private static final Comparator<CellSample> ROW_MAJOR =
         Comparator.comparingInt((CellSample sample) -> sample.canonicalPos().y())

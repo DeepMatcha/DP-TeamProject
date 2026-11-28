@@ -4,9 +4,13 @@ import com.holub.life.api.BoardState;
 import com.holub.life.api.ModelListener;
 import com.holub.life.api.ModelPort;
 import java.util.Objects;
-import java.util.ServiceConfigurationError;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * The Model: holds the last committed board and publishes each commit (Observer subject;
+ * {@link ModelListener}s are the observers). Boards are immutable, so listeners on any thread
+ * read a consistent snapshot without locking.
+ */
 final class HostBoardModel implements ModelPort {
     private static final System.Logger LOG = System.getLogger(HostBoardModel.class.getName());
 
@@ -35,11 +39,8 @@ final class HostBoardModel implements ModelPort {
     void commit(BoardState next) {
         current = next;
         for (ModelListener listener : listeners) {
-            try {
-                listener.onChanged(next);
-            } catch (RuntimeException | AssertionError | LinkageError | ServiceConfigurationError error) {
-                LOG.log(System.Logger.Level.WARNING, "Model listener could not consume a commit", error);
-            }
+            ExtensionCalls.failureOf(() -> listener.onChanged(next)).ifPresent(error ->
+                    LOG.log(System.Logger.Level.WARNING, "Model listener could not consume a commit", error));
         }
     }
 }

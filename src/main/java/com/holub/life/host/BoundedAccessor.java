@@ -9,7 +9,7 @@ import com.holub.life.api.GridPos;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Maps coordinates into a finite rectangular board without wrapping. */
+/** Maps coordinates into a finite rectangular board without wrapping (the default topology Strategy). */
 public final class BoundedAccessor implements AccessorFactory<GridPos> {
     public static final String ID = "core:bounded";
 
