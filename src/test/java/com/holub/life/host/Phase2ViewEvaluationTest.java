@@ -33,10 +33,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
+import javax.swing.JMenu;
+import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.Test;
@@ -152,21 +154,38 @@ class Phase2ViewEvaluationTest {
             List<Window> existing = readEdt(() -> List.of(Window.getWindows()));
             try {
                 onEdt(() -> new SwingLifeView(host).show());
-                assertTrue(readEdt(() -> hasDefaultWindow(existing)), "The standalone desktop starts visible");
+                JFrame defaultFrame = readEdt(() -> defaultWindow(existing));
                 enable(host, replacement.id());
+                boolean attachedDuringReplacement = replacement.attached.await(5, TimeUnit.SECONDS);
                 flushEdt();
-                boolean defaultVisibleDuringReplacement = readEdt(() -> hasDefaultWindow(existing));
-                int attachedDuringReplacement = replacement.attached.get();
+                boolean defaultVisibleDuringReplacement = readEdt(defaultFrame::isShowing);
 
-                enable(host);
+                boolean usedVisibleOffSwitch = readEdt(() -> {
+                    for (Window window : Window.getWindows()) {
+                        if (window instanceof JFrame frame && frame != defaultFrame && !existing.contains(frame)
+                                && frame.isShowing() && frame.getJMenuBar() != null) {
+                            JMenuItem item = menuItem(frame, "Plugins", replacement.id());
+                            if (item instanceof JCheckBoxMenuItem toggle && toggle.isSelected()) {
+                                toggle.doClick(0);
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                });
+                if (!usedVisibleOffSwitch) {
+                    enable(host);
+                }
+                boolean detachedAfterDisable = replacement.detached.await(5, TimeUnit.SECONDS);
                 flushEdt();
-                boolean defaultVisibleAfterDisable = readEdt(() -> hasDefaultWindow(existing));
+                boolean defaultVisibleAfterDisable = readEdt(defaultFrame::isShowing);
 
                 assertAll(
-                        () -> assertTrue(attachedDuringReplacement > 0, "Enabled replacement receives attach"),
+                        () -> assertTrue(attachedDuringReplacement, "Enabled replacement receives attach"),
                         () -> assertFalse(defaultVisibleDuringReplacement, "Default window is suppressed"),
-                        () -> assertTrue(replacement.detached.get() > 0, "Disabled replacement receives detach"),
-                        () -> assertTrue(defaultVisibleAfterDisable, "Default window returns"));
+                        () -> assertTrue(detachedAfterDisable, "Disabled replacement receives detach"),
+                        () -> assertTrue(defaultVisibleAfterDisable, "Default window returns"),
+                        () -> assertTrue(usedVisibleOffSwitch, "The replacement has a reachable off switch"));
             } finally {
                 onEdt(() -> {
                     for (Window window : Window.getWindows()) {
@@ -179,9 +198,55 @@ class Phase2ViewEvaluationTest {
         }
     }
 
+    @Test
+    void pluginSwitchExposesItsActiveToolWithoutRestartingTheGame() throws Exception {
+        requireDisplay();
+        try (var host = CoreGame.newSession(BOARD_SIZE, 42, providers("view2d", "obstacle"))) {
+            await(host.step());
+            await(host.setTickIntervalMillis(60_000));
+            await(host.setRunning(true));
+            var beforeToggle = await(host.session()).board();
+            var initialPlayback = await(host.playbackState());
+            List<Window> existing = readEdt(() -> List.of(Window.getWindows()));
+            onEdt(() -> new SwingLifeView(host).show());
+            JFrame frame = readEdt(() -> defaultWindow(existing));
+            try {
+                onEdt(() -> {
+                    var toggle = (JCheckBoxMenuItem) menuItem(frame, "Plugins", "obstacle");
+                    assertFalse(toggle.isSelected(), "Installed extensions start off");
+                    assertFalse(menu(frame, "Tools").isVisible(), "The default game has no extra active tool");
+                    toggle.doClick(0);
+                });
+                assertEquals(beforeToggle, await(host.session()).board());
+                assertEquals(initialPlayback, await(host.playbackState()));
+
+                onEdt(() -> {
+                    assertTrue(menu(frame, "Tools").isVisible());
+                    menuItem(frame, "Tools", WALL_TOOL).doClick(0);
+                    clickDefaultBoard(frame, TARGET);
+                });
+                var afterWall = await(host.session()).board();
+                assertSame(host.registry().resolve("obstacle:wall").orElseThrow(), afterWall.cellAt(TARGET).type());
+
+                onEdt(() -> menuItem(frame, "Plugins", "obstacle").doClick(0));
+                assertEquals(afterWall, await(host.session()).board());
+                GridPos untouched = new GridPos(1, 3);
+                onEdt(() -> {
+                    assertFalse(menu(frame, "Tools").isVisible());
+                    clickDefaultBoard(frame, untouched);
+                });
+                assertSame(CoreCellTypes.alive(host.registry()),
+                        await(host.session()).board().cellAt(untouched).type(), "Core editing resumes");
+                assertEquals(initialPlayback, await(host.playbackState()));
+            } finally {
+                onEdt(frame::dispose);
+            }
+        }
+    }
+
     private static final class ViewReplacementProbe implements LifePlugin, ViewPlugin {
-        private final AtomicInteger attached = new AtomicInteger();
-        private final AtomicInteger detached = new AtomicInteger();
+        private final CountDownLatch attached = new CountDownLatch(1);
+        private final CountDownLatch detached = new CountDownLatch(1);
 
         @Override
         public String id() {
@@ -196,12 +261,12 @@ class Phase2ViewEvaluationTest {
 
         @Override
         public void attach(ModelPort model, ControllerPort controller) {
-            attached.incrementAndGet();
+            attached.countDown();
         }
 
         @Override
         public void detach() {
-            detached.incrementAndGet();
+            detached.countDown();
         }
     }
 
@@ -280,14 +345,51 @@ class Phase2ViewEvaluationTest {
         }
     }
 
-    private static boolean hasDefaultWindow(List<Window> existing) {
+    private static JFrame defaultWindow(List<Window> existing) {
         for (Window window : Window.getWindows()) {
             if (window instanceof JFrame frame && !existing.contains(frame)
-                    && frame.isShowing() && frame.getJMenuBar() != null) {
-                return true;
+                    && frame.isShowing() && frame.getJMenuBar() != null
+                    && menu(frame, "Grid") != null && menu(frame, "Go") != null) {
+                return frame;
             }
         }
-        return false;
+        throw new AssertionError("No visible default board frame");
+    }
+
+    private static JMenu menu(JFrame frame, String name) {
+        for (int i = 0; i < frame.getJMenuBar().getMenuCount(); i++) {
+            var menu = frame.getJMenuBar().getMenu(i);
+            if (menu != null && name.equals(menu.getText())) {
+                return menu;
+            }
+        }
+        return null;
+    }
+
+    private static JMenuItem menuItem(JFrame frame, String menuName, String itemName) {
+        JMenu group = menu(frame, menuName);
+        if (group != null) {
+            for (int i = 0; i < group.getItemCount(); i++) {
+                JMenuItem item = group.getItem(i);
+                if (item != null && itemName.equals(item.getText())) {
+                    return item;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void clickDefaultBoard(JFrame frame, GridPos target) {
+        var content = frame.getContentPane();
+        Component board = ((BorderLayout) content.getLayout()).getLayoutComponent(BorderLayout.CENTER);
+        double scale = Math.min((double) board.getWidth() / BOARD_SIZE.width(),
+                (double) board.getHeight() / BOARD_SIZE.height());
+        int width = (int) (BOARD_SIZE.width() * scale);
+        int height = (int) (BOARD_SIZE.height() * scale);
+        int x = (board.getWidth() - width) / 2 + (2 * target.x() + 1) * width / (2 * BOARD_SIZE.width());
+        int y = (board.getHeight() - height) / 2 + (2 * target.y() + 1) * height / (2 * BOARD_SIZE.height());
+        board.dispatchEvent(new MouseEvent(board, MouseEvent.MOUSE_PRESSED, System.currentTimeMillis(),
+                0, x, y, 1, false, MouseEvent.BUTTON1));
     }
 
     private static List<LifePlugin> providers(String... ids) {
