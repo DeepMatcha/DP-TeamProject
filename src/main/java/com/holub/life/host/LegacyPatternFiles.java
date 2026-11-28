@@ -6,10 +6,8 @@ import com.holub.life.api.GridPos;
 import com.holub.life.api.Pattern;
 import com.holub.life.api.RegistryView;
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 
 /** Converts a legacy pattern file without accessing the live Model. */
@@ -36,22 +34,6 @@ final class LegacyPatternFiles {
             }
         }
         var pattern = new Pattern(board.size(), cells);
-        // Encode before replacement so an unsupported state or failed write
-        // never truncates an existing pattern.
-        Path destination = target.toAbsolutePath();
-        Path temporary = Files.createTempFile(destination.getParent(), ".life-", ".tmp");
-        try {
-            try (var stream = Files.newOutputStream(temporary)) {
-                codec.save(pattern, stream, registry);
-            }
-            try {
-                Files.move(temporary, destination,
-                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException error) {
-                Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
+        AtomicFileWriter.store(target, stream -> codec.save(pattern, stream, registry));
     }
 }
