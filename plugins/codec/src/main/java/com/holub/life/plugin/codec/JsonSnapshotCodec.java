@@ -83,47 +83,51 @@ public final class JsonSnapshotCodec implements SnapshotCodec {
     @Override public GameSnapshot load(InputStream in, CellTypeLookup types) throws IOException {
         Object document = Json.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
         try {
-            Map<?, ?> root = (Map<?, ?>) document;
-            if (!FORMAT.equals(root.get("format")) || !Long.valueOf(VERSION).equals(root.get("version")))
+            JsonObject root = JsonObject.of(document, "the document");
+            if (!FORMAT.equals(root.members().get("format")) || !Long.valueOf(VERSION).equals(root.members().get("version")))
                 throw new IOException("Not a version " + VERSION + " " + FORMAT + " document");
 
-            Map<?, ?> boardJson = (Map<?, ?>) root.get("board");
-            List<CellType> table = new ArrayList<>();
-            for (Object id : (List<?>) boardJson.get("types"))
-                table.add(types.resolve((String) id).orElseThrow(() ->
-                        new IOException("Unregistered cell type: " + id)));
-            List<CellState> cells = new ArrayList<>();
-            for (Object cell : (List<?>) boardJson.get("cells")) {
-                if (cell instanceof List<?> withProperties)
-                    cells.add(new CellState(table.get(Math.toIntExact((Long) withProperties.get(0))),
-                            strings((Map<?, ?>) withProperties.get(1))));
-                else
-                    cells.add(new CellState(table.get(Math.toIntExact((Long) cell)), Map.of()));
-            }
-            BoardState board = new BoardState(
-                    new BoardSize(Math.toIntExact((Long) boardJson.get("width")), Math.toIntExact((Long) boardJson.get("height"))),
-                    (Long) boardJson.get("generation"), (Long) boardJson.get("seed"), cells);
-
-            Map<?, ?> planJson = (Map<?, ?>) root.get("plan");
-            List<PluginSelection> plugins = new ArrayList<>();
-            for (Object plugin : (List<?>) planJson.get("plugins")) {
-                Map<?, ?> selection = (Map<?, ?>) plugin;
-                plugins.add(new PluginSelection((String) selection.get("id"), (Boolean) selection.get("enabled")));
-            }
-            Map<String, Map<String, String>> options = new LinkedHashMap<>();
-            for (var entry : ((Map<?, ?>) planJson.get("options")).entrySet())
-                options.put((String) entry.getKey(), strings((Map<?, ?>) entry.getValue()));
-            SimulationPlan plan = new SimulationPlan((String) planJson.get("accessor"), plugins, options);
-
-            return new GameSnapshot(board, plan, strings((Map<?, ?>) root.get("pluginVersions")));
+            BoardState board = board(root.object("board"), types);
+            SimulationPlan plan = plan(root.object("plan"));
+            return new GameSnapshot(board, plan, root.object("pluginVersions").strings());
         } catch (RuntimeException malformed) {
             throw new IOException("Malformed " + FORMAT + " document", malformed);
         }
     }
 
-    private static Map<String, String> strings(Map<?, ?> json) {
-        Map<String, String> result = new LinkedHashMap<>();
-        for (var entry : json.entrySet()) result.put((String) entry.getKey(), (String) entry.getValue());
-        return result;
+    private static BoardState board(JsonObject json, CellTypeLookup types) throws IOException {
+        List<CellType> table = new ArrayList<>();
+        for (Object id : json.array("types")) {
+            String typeId = JsonObject.as(String.class, id, "a type id");
+            table.add(types.resolve(typeId).orElseThrow(() -> new IOException("Unregistered cell type: " + typeId)));
+        }
+        List<CellState> cells = new ArrayList<>();
+        for (Object cell : json.array("cells")) {
+            if (cell instanceof List<?> withProperties)
+                cells.add(new CellState(typeAt(table, withProperties.get(0)),
+                        JsonObject.of(withProperties.get(1), "cell properties").strings()));
+            else
+                cells.add(new CellState(typeAt(table, cell), Map.of()));
+        }
+        return new BoardState(new BoardSize(json.integer("width"), json.integer("height")),
+                json.number("generation"), json.number("seed"), cells);
+    }
+
+    private static CellType typeAt(List<CellType> table, Object index) throws IOException {
+        return table.get(Math.toIntExact(JsonObject.as(Long.class, index, "a cell's type index")));
+    }
+
+    private static SimulationPlan plan(JsonObject json) throws IOException {
+        List<PluginSelection> plugins = new ArrayList<>();
+        for (Object plugin : json.array("plugins")) {
+            JsonObject selection = JsonObject.of(plugin, "a plugin selection");
+            plugins.add(new PluginSelection(selection.string("id"), selection.bool("enabled")));
+        }
+        Map<String, Map<String, String>> options = new LinkedHashMap<>();
+        for (var entry : json.object("options").members().entrySet()) {
+            String pluginId = JsonObject.as(String.class, entry.getKey(), "a plugin id");
+            options.put(pluginId, JsonObject.of(entry.getValue(), pluginId).strings());
+        }
+        return new SimulationPlan(json.string("accessor"), plugins, options);
     }
 }

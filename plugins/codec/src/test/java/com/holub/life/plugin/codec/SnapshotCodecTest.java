@@ -160,6 +160,15 @@ class SnapshotCodecTest {
     }
 
     @Test
+    void jsonNamesTheMemberWithTheWrongType() throws IOException {
+        String text = new String(saved(new JsonSnapshotCodec()), StandardCharsets.UTF_8).replace("\"width\":3", "\"width\":\"3\"");
+
+        IOException error = assertThrows(IOException.class,
+                () -> new JsonSnapshotCodec().load(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)), host));
+        assertTrue(error.getMessage().contains("width"), error.getMessage());
+    }
+
+    @Test
     void jsonRejectsACellCountThatDoesNotMatchTheSize() throws IOException {
         String text = new String(saved(new JsonSnapshotCodec()), StandardCharsets.UTF_8).replace("\"width\":3", "\"width\":4");
 
