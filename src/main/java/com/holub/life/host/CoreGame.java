@@ -73,7 +73,7 @@ public final class CoreGame {
 
         @Override
         public BoardPatch apply(ToolInput input, BoardState current, Accessor<GridPos> accessor) {
-            if (!input.action().equals("toggle")) {
+            if (!input.action().equals("toggle") && !input.action().equals("click")) {
                 throw new IllegalArgumentException("Unsupported tool action: " + input.action());
             }
             var cell = accessor.access(input.anchor())
