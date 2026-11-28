@@ -1,36 +1,67 @@
 package com.holub.life;
 
-import java.awt.*;
-import javax.swing.*;
-import com.holub.ui.MenuSite;
+import com.holub.life.api.BoardSize;
+import com.holub.life.host.CoreGame;
+import com.holub.life.host.HostController;
+import com.holub.life.host.PluginDirectory;
+import com.holub.life.host.SwingLifeView;
+import java.io.IOException;
+import java.util.ServiceConfigurationError;
+import java.util.concurrent.ThreadLocalRandom;
+import javax.swing.JOptionPane;
+import javax.swing.SwingUtilities;
 
 /*******************************************************************
- * An implemenation of Conway's Game of Life.
+ * An implementation of Conway's Game of Life.
  *
  * @include /etc/license.txt
  */
+public final class Life {
+    private Life() {}
 
-public final class Life extends JFrame
-{	
-	private static JComponent universe;
+    public static void main(String[] arguments) {
+        SwingUtilities.invokeLater(Life::openGame);
+    }
 
-	public static void main( String[] arguments )
-	{	new Life();
-	}
+    private static void openGame() {
+        var board = new BoardSize(64, 64);
+        long seed = ThreadLocalRandom.current().nextLong();
+        var thread = Thread.currentThread();
+        var previous = thread.getContextClassLoader();
+        PluginDirectory directory = null;
+        HostController host;
+        try {
+            directory = PluginDirectory.open();
+            thread.setContextClassLoader(directory.classLoader());
+            host = CoreGame.newSession(board, seed, directory.plugins());
+        } catch (IOException | RuntimeException | LinkageError | ServiceConfigurationError failure) {
+            thread.setContextClassLoader(previous);
+            close(directory);
+            new SwingLifeView(CoreGame.newSession(board, seed)).show();
+            JOptionPane.showMessageDialog(null, "Starting the default game.\n" + failure,
+                    "Could not load plug-ins", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        var loaded = directory;
+        Runnable release = () -> {
+            thread.setContextClassLoader(previous);
+            close(loaded);
+        };
+        try {
+            new SwingLifeView(host, release).show();
+        } catch (RuntimeException | Error failure) {
+            host.close();
+            release.run();
+            throw failure;
+        }
+    }
 
-	private Life()
-	{	super( "The Game of Life. "
-					+"(c)2003 Allen I. Holub <http://www.holub.com>");
-
-		// Must establish the MenuSite very early in case
-		// a subcomponent puts menus on it.
-		MenuSite.establish( this );		//{=life.java.establish}
-
-		setDefaultCloseOperation	( EXIT_ON_CLOSE 		);
-		getContentPane().setLayout	( new BorderLayout()	);
-		getContentPane().add( Universe.instance(), BorderLayout.CENTER); //{=life.java.install}
-
-		pack();
-		setVisible( true );
-	}
+    private static void close(PluginDirectory directory) {
+        if (directory == null) return;
+        try {
+            directory.close();
+        } catch (IOException failure) {
+            System.getLogger(Life.class.getName()).log(System.Logger.Level.WARNING, "Closing plug-in JARs", failure);
+        }
+    }
 }
