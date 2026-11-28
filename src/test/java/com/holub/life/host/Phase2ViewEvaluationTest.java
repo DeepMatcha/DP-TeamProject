@@ -14,6 +14,7 @@ import com.holub.life.api.ModelPort;
 import com.holub.life.api.PluginRegistrar;
 import com.holub.life.api.PluginSelection;
 import com.holub.life.api.SimulationPlan;
+import com.holub.life.api.ToolInput;
 import com.holub.life.api.ViewPlugin;
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -28,6 +29,8 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
@@ -84,6 +88,36 @@ class Phase2ViewEvaluationTest {
 
                 assertSame(alive, host.model().snapshot().cellAt(TARGET).type(),
                         "Selecting the core toggle from the view's tool list must toggle the target");
+            }
+        }
+    }
+
+    @Test
+    void supplementaryViewRespectsTheHostDecisionForADisabledWallTool() throws Exception {
+        requireDisplay();
+        try (var host = CoreGame.newSession(BOARD_SIZE, 42, providers("view2d", "obstacle"))) {
+            enable(host, "view2d");
+            var input = new ToolInput(TARGET, "click", Map.of());
+            assertThrows(ExecutionException.class, () -> await(host.applyTool(WALL_TOOL, input)));
+            var before = host.model().snapshot().cellAt(TARGET);
+            var edited = new CountDownLatch(1);
+            try (var view = openSupplementaryView(host)) {
+                host.model().addListener(board -> {
+                    if (!before.equals(board.cellAt(TARGET))) edited.countDown();
+                });
+                onEdt(() -> {
+                    // Hiding or disabling an unavailable tool also honors the host policy.
+                    if (view.tools.isEnabled() && view.panel.isEnabled()) {
+                        for (int i = 0; i < view.tools.getItemCount(); i++) {
+                            if (WALL_TOOL.equals(view.tools.getItemAt(i))) {
+                                view.click(WALL_TOOL, TARGET);
+                                break;
+                            }
+                        }
+                    }
+                });
+                assertFalse(edited.await(2, TimeUnit.SECONDS),
+                        "A tool rejected by the host while disabled edited the cell through its 2D view");
             }
         }
     }
