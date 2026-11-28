@@ -134,7 +134,7 @@ public final class PluginDirectory implements AutoCloseable {
                 if (Files.isRegularFile(executable)) {
                     Path parent = executable.getParent();
                     Path adjacent = parent.resolve("plugins");
-                    if (!Files.exists(adjacent) && "lib".equals(parent.getFileName().toString())) {
+                    if (!Files.exists(adjacent) && parent.endsWith("lib")) {
                         // Gradle installation: bin/<launcher>, lib/<host>.jar, plugins/*.jar.
                         return parent.resolveSibling("plugins");
                     }
