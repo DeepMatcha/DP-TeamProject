@@ -1,7 +1,8 @@
 package com.holub.life;
-import java.awt.*;
 
-import com.holub.life.Storable;
+import java.awt.Graphics;
+import java.awt.Point;
+import java.awt.Rectangle;
 
 /***
  * This interface is the basic unit that comprises a life board.
@@ -136,27 +137,27 @@ public interface Cell
 
 	public static final Cell DUMMY = new Cell()
 	{
-		public boolean figureNextState(Cell n,  Cell s,  Cell e,  Cell w,
+		@Override public boolean figureNextState(Cell n,  Cell s,  Cell e,  Cell w,
 									   Cell ne, Cell nw, Cell se, Cell sw)
 											{return true;  			  }
 
-		public Cell		 edge(int r, int c)	{return this;  			  }
-		public boolean	 isAlive()		   	{return false; 			  }
-		public Cell 	 create()	   	   	{return this;			  }
-		public Direction isDisruptiveTo()	{return Direction.NONE;	  }
-		public void 	 clear()		   	{						  }
-		public int 		 widthInCells()  	{return 0;				  }
-		public boolean	 transition()		{return false;			  }
+		@Override public Cell		 edge(int r, int c)	{return this;  			  }
+		@Override public boolean	 isAlive()		   	{return false; 			  }
+		@Override public Cell 	 create()	   	   	{return this;			  }
+		@Override public Direction isDisruptiveTo()	{return Direction.NONE;	  }
+		@Override public void 	 clear()		   	{						  }
+		@Override public int 		 widthInCells()  	{return 0;				  }
+		@Override public boolean	 transition()		{return false;			  }
 
-		public void	userClicked(Point h, Rectangle s				){}
-		public void redraw 		(Graphics g, Rectangle here,
+		@Override public void	userClicked(Point h, Rectangle s				){}
+		@Override public void redraw 		(Graphics g, Rectangle here,
 												 boolean drawAll	){}
 
-		public boolean transfer( Storable m, Point ul, boolean load )
+		@Override public boolean transfer( Storable m, Point ul, boolean load )
 		{	return false;
 		}
 
-		public Storable createMemento()
+		@Override public Storable createMemento()
 		{	throw new UnsupportedOperationException(
 						"Cannot create memento of dummy block");
 		}

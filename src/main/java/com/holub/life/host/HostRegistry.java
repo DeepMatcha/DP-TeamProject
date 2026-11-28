@@ -12,8 +12,10 @@ import com.holub.life.api.LifecycleManager;
 import com.holub.life.api.PatternCodec;
 import com.holub.life.api.PluginInfo;
 import com.holub.life.api.PluginRegistrar;
+import com.holub.life.api.PluginSelection;
 import com.holub.life.api.RegistrationInfo;
 import com.holub.life.api.RegistryView;
+import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.SnapshotCodec;
 import com.holub.life.api.ViewPlugin;
 
@@ -29,7 +31,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** The host's immutable catalog of the modules registered at startup. */
+/**
+ * The host's immutable catalog of the modules registered at startup (Registry). Plugins fill it
+ * through a {@code PluginRegistrar} that is valid only during their {@code register()} call.
+ */
 public final class HostRegistry implements RegistryView {
     private final List<PluginInfo> plugins;
     private final List<RegistrationInfo> registrations;
@@ -146,6 +151,26 @@ public final class HostRegistry implements RegistryView {
 
     boolean replacesDefault(String pluginId, ApiPoint point) {
         return defaultReplacements.getOrDefault(pluginId, Set.of()).contains(point);
+    }
+
+    /** Whether an enabled plugin of the plan takes over the built-in module at the point. */
+    boolean replacesDefault(SimulationPlan plan, ApiPoint point) {
+        return plan.plugins().stream().anyMatch(selection -> selection.enabled()
+                && replacesDefault(selection.pluginId(), point));
+    }
+
+    /** Registrations at the point from the plan's enabled plugins, in plan and registration order. */
+    List<RegistrationInfo> activeRegistrations(SimulationPlan plan, ApiPoint point) {
+        return activeRegistrations(plan.plugins(), point);
+    }
+
+    List<RegistrationInfo> activeRegistrations(List<PluginSelection> selections, ApiPoint point) {
+        return selections.stream()
+                .filter(PluginSelection::enabled)
+                .flatMap(selection -> registrations.stream()
+                        .filter(registration -> registration.point() == point
+                                && registration.pluginId().equals(selection.pluginId())))
+                .toList();
     }
 
     private static <T> Optional<T> lookup(Map<String, T> modules, String id) {

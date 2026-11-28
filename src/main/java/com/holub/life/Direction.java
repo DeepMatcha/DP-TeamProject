@@ -60,7 +60,11 @@ public class Direction
 	public  Direction( Direction d  ){  map = d.map; }
 	private Direction( int bits     ){  map = bits;	 }
  
-	public boolean 	equals( Direction d ){ return d.map == map; }
+	@Override public boolean equals( Object other )
+	{	return other instanceof Direction d && d.map == map;
+	}
+	@Override public int hashCode(){ return map; }
+
 	public void 	clear (			 	){ map = BITS_NONE; 	}
 	public void 	add   ( Direction d ){ map |= d.map;	 	}
 	public boolean 	has   ( Direction d ){ return the(d);				}
@@ -73,11 +77,11 @@ public class Direction
 
 		private Immutable(int bits){ super(bits); }
 
-		public void clear()
+		@Override public void clear()
 		{	throw new UnsupportedOperationException(message);
 		}
 
-		public void add( Direction d )
+		@Override public void add( Direction d )
 		{	throw new UnsupportedOperationException(message);
 		}
 	}

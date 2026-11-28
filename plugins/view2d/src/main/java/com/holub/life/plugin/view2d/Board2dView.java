@@ -8,6 +8,8 @@ import com.holub.life.api.GridPos;
 import com.holub.life.api.InputTool;
 import com.holub.life.api.ModelListener;
 import com.holub.life.api.ModelPort;
+import com.holub.life.api.PluginSelection;
+import com.holub.life.api.SimulationPlan;
 import com.holub.life.api.ToolInput;
 import com.holub.life.api.ViewPlugin;
 
@@ -81,17 +83,31 @@ public final class Board2dView implements ViewPlugin {
         frame.setVisible(true);
     }
 
-    /** Asks the tool for a patch against the current session and applies it atomically. */
+    /**
+     * Asks the tool for a patch against the current session and applies it atomically.
+     * Only a tool whose plugin is enabled in that session's plan may edit, the same rule
+     * the host applies to its own tool input.
+     */
     public CompletionStage<BoardState> useTool(String toolId, GridPos cell) {
         InputTool tool = controller.registry().inputTool(toolId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown input tool: " + toolId));
         return controller.session().thenCompose(session -> {
+            if (!isEnabled(toolId, session.plan()))
+                throw new IllegalArgumentException("Input tool is not enabled: " + toolId);
             var accessor = controller.registry().accessor(session.plan().accessorId())
                     .orElseThrow(() -> new IllegalStateException("Unknown accessor: " + session.plan().accessorId()))
                     .bind(session.board());
             BoardPatch patch = tool.apply(new ToolInput(cell, "click", Map.of()), session.board(), accessor);
             return controller.apply(patch);
         });
+    }
+
+    private boolean isEnabled(String toolId, SimulationPlan plan) {
+        return controller.registry().registrations().stream()
+                .filter(registration -> registration.point() == ApiPoint.INPUT_TOOL
+                        && registration.id().equals(toolId))
+                .anyMatch(registration -> plan.plugins().contains(
+                        new PluginSelection(registration.pluginId(), true)));
     }
 
     @Override public void detach() {

@@ -9,7 +9,6 @@ import com.holub.life.api.ViewPlugin;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.ServiceConfigurationError;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -42,7 +41,7 @@ final class DesktopPluginViews {
     }
 
     private void reconcile(SimulationPlan plan) {
-        var active = host.activeRegistrations(plan, ApiPoint.VIEW);
+        var active = host.registry().activeRegistrations(plan, ApiPoint.VIEW);
         var desired = new HashSet<String>();
         active.forEach(registration -> desired.add(registration.id()));
         for (Iterator<AttachedView> iterator = attached.values().iterator(); iterator.hasNext();) {
@@ -65,24 +64,21 @@ final class DesktopPluginViews {
     private void attach(ViewPlugin view) {
         var model = new ViewModel(host.model());
         var activation = new AttachedView(view, model);
-        try {
+        ExtensionCalls.failureOf(() -> {
             view.attach(model, host);
             model.connect();
             attached.put(view.id(), activation);
             model.refresh();
-        } catch (RuntimeException | LinkageError | ServiceConfigurationError | AssertionError failure) {
+        }).ifPresent(failure -> {
             detach(activation);
             onFailure.accept(failure);
-        }
+        });
     }
 
     private void detach(AttachedView attachment) {
         attachment.model().disconnect();
-        try {
-            attachment.view().detach();
-        } catch (RuntimeException | LinkageError | ServiceConfigurationError | AssertionError failure) {
-            LOG.log(System.Logger.Level.WARNING, "Could not detach view " + attachment.view().id(), failure);
-        }
+        ExtensionCalls.failureOf(attachment.view()::detach).ifPresent(failure ->
+                LOG.log(System.Logger.Level.WARNING, "Could not detach view " + attachment.view().id(), failure));
     }
 
     void close(Runnable afterViewsClosed) {
@@ -101,6 +97,7 @@ final class DesktopPluginViews {
     private record AttachedView(ViewPlugin view, ViewModel model) {}
 
     /**
+     * Proxy in front of the host Model for one attached view.
      * Gives only this view a refresh after plan changes, using the current committed board.
      * The host Model does not publish a board change for plan-only operations.
      */
@@ -137,11 +134,8 @@ final class DesktopPluginViews {
                 if (!connected) {
                     return;
                 }
-                try {
-                    listener.onChanged(board);
-                } catch (RuntimeException | LinkageError | ServiceConfigurationError | AssertionError failure) {
-                    LOG.log(System.Logger.Level.WARNING, "A view could not refresh", failure);
-                }
+                ExtensionCalls.failureOf(() -> listener.onChanged(board)).ifPresent(failure ->
+                        LOG.log(System.Logger.Level.WARNING, "A view could not refresh", failure));
             }
         }
 

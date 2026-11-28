@@ -7,7 +7,10 @@ import com.holub.life.api.StepContext;
 
 import java.util.Map;
 
-/** Conway B3/S23 for the host's core cells. Extension types control their own transitions. */
+/**
+ * Conway B3/S23 for the host's core cells. Extension types control their own transitions.
+ * A rule is a Strategy the engine applies to every cell; the engine owns iteration and commit.
+ */
 public final class CoreConwayRule extends LifecycleManager {
     private static final CellState EMPTY_STATE = new CellState(CoreCells.EMPTY, Map.of());
     private static final CellState ALIVE_STATE = new CellState(CoreCells.ALIVE, Map.of());

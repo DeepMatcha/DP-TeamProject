@@ -26,6 +26,7 @@ import java.util.Map;
  * Reads and writes Holub's serialized list of live coordinates. The format
  * contains no board dimensions, so load reports the smallest extent anchored
  * at (0, 0). The caller owns both streams and decides how to place the pattern.
+ * Adapter: presents the original {@code .life} file format through the {@code PatternCodec} API.
  */
 public final class LegacyLifeCodec implements PatternCodec {
     public static final String FORMAT_ID = "core:legacy-life";

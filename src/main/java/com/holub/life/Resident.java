@@ -1,14 +1,12 @@
 package com.holub.life;
 
-import java.awt.*;
-import javax.swing.*;
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Point;
+import java.awt.Rectangle;
+
 import com.holub.ui.Colors;	// Contains constants specifying various
 							// colors not defined in java.awt.Color.
-import com.holub.life.Cell;
-import com.holub.life.Storable;
-import com.holub.life.Direction;
-import com.holub.life.Neighborhood;
-import com.holub.life.Universe;
 
 /*** ****************************************************************
  * The Resident class implements a single cell---a "resident" of a
@@ -32,7 +30,7 @@ public final class Resident implements Cell
 	 *  @return true if the cell is not stable (will change state on the
 	 *  next transition().
 	 */
-	public boolean figureNextState(
+	@Override public boolean figureNextState(
 							Cell north, 	Cell south,
 							Cell east, 		Cell west,
 							Cell northeast, Cell northwest,
@@ -72,18 +70,18 @@ public final class Resident implements Cell
 	 *  an internal error for any position except for (0,0) to be
 	 *  requsted since the width is 1.
 	 */
-	public Cell	edge(int row, int column)
+	@Override public Cell	edge(int row, int column)
 	{	assert row==0 && column==0;
 		return this;
 	}
 
-	public boolean transition()
+	@Override public boolean transition()
 	{	boolean changed = isStable();
 		amAlive = willBeAlive;
 		return changed;
 	}
 
-	public void redraw(Graphics g, Rectangle here, boolean drawAll)
+	@Override public void redraw(Graphics g, Rectangle here, boolean drawAll)
     {   g = g.create();
 		g.setColor(amAlive ? LIVE_COLOR : DEAD_COLOR );
 		g.fillRect(here.x+1, here.y+1, here.width-1, here.height-1);
@@ -98,20 +96,20 @@ public final class Resident implements Cell
 		g.dispose();
 	}
 
-	public void userClicked(Point here, Rectangle surface)
+	@Override public void userClicked(Point here, Rectangle surface)
 	{	amAlive = !amAlive;
 	}
 
-	public void	   clear()			{amAlive = willBeAlive = false; }
-	public boolean isAlive()		{return amAlive;			    }
-	public Cell    create()			{return new Resident();			}
-	public int 	   widthInCells()	{return 1;}
+	@Override public void	   clear()			{amAlive = willBeAlive = false; }
+	@Override public boolean isAlive()		{return amAlive;			    }
+	@Override public Cell    create()			{return new Resident();			}
+	@Override public int 	   widthInCells()	{return 1;}
 
-	public Direction isDisruptiveTo()
+	@Override public Direction isDisruptiveTo()
 	{	return isStable() ? Direction.NONE : Direction.ALL ;
 	}
 
-	public boolean transfer(Storable blob,Point upperLeft,boolean doLoad)
+	@Override public boolean transfer(Storable blob,Point upperLeft,boolean doLoad)
 	{
 		Memento memento = (Memento)blob;
 		if( doLoad )
@@ -127,7 +125,7 @@ public final class Resident implements Cell
 	/** Mementos must be created by Neighborhood objects. Throw an
 	 *  exception if anybody tries to do it here.
 	 */
-	public Storable createMemento()
+	@Override public Storable createMemento()
 	{	throw new UnsupportedOperationException(
 					"May not create memento of a unitary cell");
 	}
